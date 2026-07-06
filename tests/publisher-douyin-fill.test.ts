@@ -220,6 +220,32 @@ test("douyin topic fill uses inline picker when no standalone topic input exists
   assert.deepEqual(calls, ["inline:tag-one", "inline:tag-two"]);
 });
 
+test("douyin topic fill sends at most five unique topics", async () => {
+  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
+  const calls: string[] = [];
+  const added = new Set<string>();
+  const page = {
+    waitForTimeout: async () => undefined
+  };
+
+  hooks.hasDouyinTopic = async (_page: unknown, tag: string) => added.has(tag);
+  hooks.findDouyinTopicInput = async () => null;
+  hooks.tryFillDouyinInlineTopic = async (_page: unknown, tag: string) => {
+    calls.push(tag);
+    added.add(tag);
+    return true;
+  };
+
+  const filled = await (hooks.tryFillDouyinTopics as (page: unknown, hashtags: string[], timeoutMs: number) => Promise<boolean>)(
+    page,
+    ["tag-one", "#tag-two", "tag-three", "tag-four", "tag-five", "tag-six", "TAG-TWO"],
+    10_000
+  );
+
+  assert.equal(filled, true);
+  assert.deepEqual(calls, ["tag-one", "tag-two", "tag-three", "tag-four", "tag-five"]);
+});
+
 test("douyin body fill fails when intro cannot be verified", async () => {
   const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
   const page = {

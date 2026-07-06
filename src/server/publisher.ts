@@ -16,7 +16,7 @@ const PLATFORM_URLS: Record<Platform, string> = {
 };
 
 export const ADAPTER_VERSIONS: Record<Platform, string> = {
-  douyin: "2026.07.06-cover-wait-inline-topic-v1",
+  douyin: "2026.07.06-cover-wait-inline-topic-max5-v1",
   xiaohongshu: "2026.06.25-manual-profile-v1",
   kuaishou: "2026.07.05-kuaishou-cover-real-page-v20",
   bilibili: "2026.07.05-bilibili-ai-declaration-real-page-v2"
@@ -65,6 +65,7 @@ const WORD = {
 };
 
 const LOGIN_URL_PARTS = ["login", "passport", "sso"];
+const DOUYIN_MAX_HASHTAGS = 5;
 type CoverPaths = { landscape: string | null; portrait: string | null };
 type ProgressReporter = (stage: string) => void;
 
@@ -437,9 +438,7 @@ export class Publisher {
 
   private async tryFillDouyinTopics(page: Page, hashtags: string[], timeoutMs: number) {
     const deadline = Date.now() + timeoutMs;
-    for (const rawTag of hashtags.slice(0, 10)) {
-      const tag = rawTag.replace(/^#/, "").trim();
-      if (!tag) continue;
+    for (const tag of this.douyinHashtags(hashtags)) {
       if (await this.hasDouyinTopic(page, tag)) continue;
 
       let added = false;
@@ -466,6 +465,20 @@ export class Publisher {
       if (!added) return false;
     }
     return true;
+  }
+
+  private douyinHashtags(hashtags: string[]) {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const rawTag of hashtags) {
+      const tag = rawTag.replace(/^#/, "").trim();
+      const key = tag.toLowerCase();
+      if (!tag || seen.has(key)) continue;
+      seen.add(key);
+      result.push(tag);
+      if (result.length >= DOUYIN_MAX_HASHTAGS) break;
+    }
+    return result;
   }
 
   private async tryFillTags(page: Page, platform: Platform, hashtags: string[]) {
