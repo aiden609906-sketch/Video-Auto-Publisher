@@ -41,7 +41,7 @@ function makePublisherWithPage() {
   return { publisher: publisher as unknown as Publisher, hooks: publisher };
 }
 
-test("douyin skips second body fill when first body fill already succeeded", async () => {
+test("douyin revalidates body after first body fill reports success", async () => {
   const { publisher, hooks } = makePublisherWithPage();
   let ensureCalls = 0;
   hooks.ensureDouyinBody = async () => {
@@ -57,9 +57,26 @@ test("douyin skips second body fill when first body fill already succeeded", asy
     { landscape: null, portrait: null }
   );
 
-  assert.equal(ensureCalls, 0);
+  assert.equal(ensureCalls, 1);
   assert.equal(result.bodyPrefilled, true);
   assert.equal(result.tagsPrefilled, true);
+  assert.equal(result.declarationPrefilled, true);
+});
+
+test("douyin reports body fill failure when final body verification fails", async () => {
+  const { publisher, hooks } = makePublisherWithPage();
+  hooks.ensureDouyinBody = async () => false;
+
+  const result = await publisher.open(
+    "douyin",
+    "default-douyin",
+    "video.mp4",
+    makeDouyinPost(),
+    { landscape: null, portrait: null }
+  );
+
+  assert.equal(result.bodyPrefilled, false);
+  assert.equal(result.tagsPrefilled, false);
   assert.equal(result.declarationPrefilled, true);
 });
 
@@ -279,6 +296,43 @@ test("kuaishou AI declaration does not report success when the author row remain
   assert.equal(selected, false);
 });
 
+test("kuaishou AI declaration waits for the selected value to settle after clicking", async () => {
+  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
+  const calls: string[] = [];
+  let verifyCalls = 0;
+  const page = {
+    waitForTimeout: async () => undefined
+  };
+
+  hooks.closeTransientMenus = async () => undefined;
+  hooks.scrollDeclarationSectionIntoView = async () => undefined;
+  hooks.clickKuaishouAuthorDeclarationControl = async () => {
+    calls.push("open");
+    return true;
+  };
+  hooks.selectAiDeclarationByDom = async () => {
+    calls.push("select-dom");
+    return true;
+  };
+  hooks.clickKuaishouAiGeneratedOption = async () => {
+    calls.push("click-option");
+    return true;
+  };
+  hooks.hasKuaishouAiDeclarationSelected = async () => {
+    verifyCalls += 1;
+    calls.push(`verify-${verifyCalls}`);
+    return verifyCalls >= 4;
+  };
+
+  const selected = await (hooks.trySelectAiDeclaration as (page: unknown, platform: string) => Promise<boolean>)(
+    page,
+    "kuaishou"
+  );
+
+  assert.equal(selected, true);
+  assert.ok(calls.includes("verify-4"));
+});
+
 test("kuaishou cover upload only succeeds after the cover dialog is confirmed and closed", async () => {
   const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
   const calls: string[] = [];
@@ -371,6 +425,33 @@ test("kuaishou cover upload waits for the uploaded preview before confirming", a
 
   assert.equal(uploaded, true);
   assert.deepEqual(calls, ["upload-cover-file", "wait-upload-preview", "confirm-cover-dialog"]);
+});
+
+test("bilibili cover upload fails when the cover editor cannot be completed", async () => {
+  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
+  const uploadedFiles: string[] = [];
+  const page = {
+    waitForTimeout: async () => undefined
+  };
+  const input = {
+    setInputFiles: async (file: string) => {
+      uploadedFiles.push(file);
+    }
+  };
+
+  hooks.openCoverPanel = async () => undefined;
+  hooks.waitForImageInputs = async () => [input, input];
+  hooks.clickVisibleDialogText = async () => false;
+  hooks.clickVisibleButton = async () => false;
+  hooks.waitForCoverDialogClosed = async () => false;
+
+  const uploaded = await (hooks.uploadBilibiliCovers as (page: unknown, covers: { landscape: string | null; portrait: string | null }) => Promise<boolean>)(
+    page,
+    { landscape: "cover.png", portrait: null }
+  );
+
+  assert.equal(uploaded, false);
+  assert.deepEqual(uploadedFiles, ["cover.png", "cover.png"]);
 });
 
 test("douyin body verification tolerates editor helper text after successful paste", () => {

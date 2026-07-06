@@ -185,10 +185,8 @@ export class Publisher {
       }
       reportProgress("\u6b63\u5728\u5173\u95ed\u6296\u97f3\u8bdd\u9898\u6d6e\u5c42");
       await this.dismissDouyinTopicList(page);
-      if (!bodyPrefilled) {
-        reportProgress("\u6b63\u5728\u5feb\u901f\u8865\u586b\u6296\u97f3\u6b63\u6587\u548c\u8bdd\u9898");
-        bodyPrefilled = await this.ensureDouyinBody(page, post);
-      }
+      reportProgress(bodyPrefilled ? "\u6b63\u5728\u6821\u9a8c\u6296\u97f3\u6b63\u6587\u548c\u8bdd\u9898" : "\u6b63\u5728\u5feb\u901f\u8865\u586b\u6296\u97f3\u6b63\u6587\u548c\u8bdd\u9898");
+      bodyPrefilled = await this.ensureDouyinBody(page, post);
       reportProgress("\u6b63\u5728\u9009\u62e9\u4f5c\u8005\u58f0\u660e\uff1a\u5185\u5bb9\u7531AI\u751f\u6210");
       const declarationPrefilled = await this.trySelectAiDeclaration(page, platform);
       reportProgress("\u81ea\u52a8\u586b\u5199\u5b8c\u6210\uff0c\u6b63\u5728\u540c\u6b65\u7ed3\u679c");
@@ -578,15 +576,33 @@ export class Publisher {
   }
 
   private async trySelectKuaishouAiDeclaration(page: Page) {
-    if (await this.hasKuaishouAiDeclarationSelected(page)) return true;
-    if (!(await this.clickKuaishouAuthorDeclarationControl(page))) return false;
-    if (await this.selectAiDeclarationByDom(page)) {
-      await page.waitForTimeout(600);
+    const started = Date.now();
+    let attempts = 0;
+    while (Date.now() - started < 8_000 && attempts < 4) {
+      attempts += 1;
       if (await this.hasKuaishouAiDeclarationSelected(page)) return true;
+      if (!(await this.clickKuaishouAuthorDeclarationControl(page))) {
+        await page.waitForTimeout(500);
+        continue;
+      }
+      if (await this.selectAiDeclarationByDom(page)) {
+        if (await this.waitForKuaishouAiDeclarationSelected(page, 2_500)) return true;
+      }
+      if (await this.clickKuaishouAiGeneratedOption(page)) {
+        if (await this.waitForKuaishouAiDeclarationSelected(page, 2_500)) return true;
+      }
+      await page.waitForTimeout(500);
     }
-    if (await this.clickKuaishouAiGeneratedOption(page)) {
-      await page.waitForTimeout(600);
+    return false;
+  }
+
+  private async waitForKuaishouAiDeclarationSelected(page: Page, timeoutMs: number) {
+    const started = Date.now();
+    let attempts = 0;
+    while (Date.now() - started < timeoutMs && attempts < Math.max(2, Math.ceil(timeoutMs / 300))) {
+      attempts += 1;
       if (await this.hasKuaishouAiDeclarationSelected(page)) return true;
+      await page.waitForTimeout(300);
     }
     return false;
   }
@@ -2064,8 +2080,9 @@ export class Publisher {
     if (inputs.length < 2 || uploaded < 2) return false;
 
     await page.waitForTimeout(1200);
-    const completed = await this.clickVisibleButton(page, "\u5b8c\u6210", 25_000);
-    return completed || uploaded === 2;
+    const completed = (await this.clickVisibleDialogText(page, "\u5b8c\u6210", 25_000)) || (await this.clickVisibleButton(page, "\u5b8c\u6210", 5_000));
+    if (!completed) return false;
+    return this.waitForCoverDialogClosed(page, 8_000);
   }
 
   private async waitForImageInputs(page: Page, timeoutMs: number) {
