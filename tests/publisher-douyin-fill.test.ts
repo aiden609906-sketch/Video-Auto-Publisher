@@ -57,7 +57,7 @@ test("douyin revalidates body after first body fill reports success", async () =
     { landscape: null, portrait: null }
   );
 
-  assert.equal(ensureCalls, 1);
+  assert.equal(ensureCalls, 2);
   assert.equal(result.bodyPrefilled, true);
   assert.equal(result.tagsPrefilled, true);
   assert.equal(result.declarationPrefilled, true);
@@ -97,10 +97,78 @@ test("douyin keeps fallback body fill when first body fill fails", async () => {
     { landscape: null, portrait: null }
   );
 
-  assert.equal(ensureCalls, 1);
+  assert.equal(ensureCalls, 2);
   assert.equal(result.bodyPrefilled, true);
   assert.equal(result.tagsPrefilled, true);
   assert.equal(result.declarationPrefilled, true);
+});
+
+test("douyin fills text before starting slow cover upload", async () => {
+  const { publisher, hooks } = makePublisherWithPage();
+  const calls: string[] = [];
+
+  hooks.tryUploadCover = async () => {
+    calls.push("cover");
+    return true;
+  };
+  hooks.tryFillTitle = async () => {
+    calls.push("title");
+    return true;
+  };
+  hooks.tryFillBody = async () => {
+    calls.push("body");
+    return true;
+  };
+  hooks.ensureDouyinBody = async () => {
+    calls.push("verify-body");
+    return true;
+  };
+  hooks.trySelectAiDeclaration = async () => {
+    calls.push("declaration");
+    return true;
+  };
+
+  await publisher.open("douyin", "default-douyin", "video.mp4", makeDouyinPost(), {
+    landscape: "cover.png",
+    portrait: null
+  });
+
+  assert.deepEqual(calls, ["title", "body", "verify-body", "cover", "verify-body", "declaration"]);
+});
+
+test("douyin cover upload fails when editor does not close after clicking complete", async () => {
+  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
+  const calls: string[] = [];
+  const page = {
+    waitForTimeout: async () => undefined
+  };
+
+  hooks.openDouyinCoverEditor = async () => true;
+  hooks.clickDouyinCoverEditorText = async (_page: unknown, label: string) => {
+    calls.push(`click:${label}`);
+    return true;
+  };
+  hooks.uploadDouyinCoverFile = async () => {
+    calls.push("upload-file");
+    return true;
+  };
+  hooks.waitForDouyinCoverApplied = async () => {
+    calls.push("wait-applied");
+    return true;
+  };
+  hooks.waitForCoverDialogClosed = async () => {
+    calls.push("wait-closed");
+    return false;
+  };
+
+  const uploaded = await (hooks.uploadDouyinCovers as (page: unknown, covers: { landscape: string | null; portrait: string | null }) => Promise<boolean>)(
+    page,
+    { landscape: "cover.png", portrait: null }
+  );
+
+  assert.equal(uploaded, false);
+  assert.ok(calls.includes("wait-applied"));
+  assert.ok(calls.includes("wait-closed"));
 });
 
 test("douyin body fill accepts verified intro and topics", async () => {
@@ -120,6 +188,36 @@ test("douyin body fill accepts verified intro and topics", async () => {
   );
 
   assert.equal(filled, true);
+});
+
+test("douyin topic fill uses inline picker when no standalone topic input exists", async () => {
+  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
+  const calls: string[] = [];
+  const added = new Set<string>();
+  const page = {
+    waitForTimeout: async () => undefined
+  };
+
+  hooks.hasDouyinTopic = async (_page: unknown, tag: string) => added.has(tag);
+  hooks.findDouyinTopicInput = async () => null;
+  hooks.tryFillDouyinInlineTopic = async (_page: unknown, tag: string) => {
+    calls.push(`inline:${tag}`);
+    added.add(tag);
+    return true;
+  };
+  hooks.openDouyinTopicInput = async () => {
+    calls.push("open-topic");
+    return true;
+  };
+
+  const filled = await (hooks.tryFillDouyinTopics as (page: unknown, hashtags: string[], timeoutMs: number) => Promise<boolean>)(
+    page,
+    ["tag-one", "tag-two"],
+    10_000
+  );
+
+  assert.equal(filled, true);
+  assert.deepEqual(calls, ["inline:tag-one", "inline:tag-two"]);
 });
 
 test("douyin body fill fails when intro cannot be verified", async () => {

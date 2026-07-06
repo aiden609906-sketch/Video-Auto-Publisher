@@ -16,7 +16,7 @@ const PLATFORM_URLS: Record<Platform, string> = {
 };
 
 export const ADAPTER_VERSIONS: Record<Platform, string> = {
-  douyin: "2026.07.04-ai-declaration-v1-fast-body-v4",
+  douyin: "2026.07.06-cover-wait-inline-topic-v1",
   xiaohongshu: "2026.06.25-manual-profile-v1",
   kuaishou: "2026.07.05-kuaishou-cover-real-page-v20",
   bilibili: "2026.07.05-bilibili-ai-declaration-real-page-v2"
@@ -173,19 +173,35 @@ export class Publisher {
     if (platform === "douyin") {
       reportProgress("\u6b63\u5728\u70b9\u51fb\u7a7a\u767d\u5904\u5173\u95ed\u8bdd\u9898\u5217\u8868");
       await this.dismissDouyinTopicList(page);
-      reportProgress("\u6b63\u5728\u4e0e\u89c6\u9891\u5904\u7406\u540c\u6b65\u4e0a\u4f20\u5c01\u9762");
-      let coverPrefilled = await this.tryUploadCover(page, platform, covers);
       reportProgress("\u6b63\u5728\u586b\u5199\u6296\u97f3\u6807\u9898");
       const titlePrefilled = await this.tryFillTitle(page, platform, post.title, 10_000);
       reportProgress("\u6b63\u5728\u586b\u5199\u6296\u97f3\u6b63\u6587\u548c\u8bdd\u9898");
       let bodyPrefilled = await this.tryFillBody(page, platform, post, 10_000);
-      if (!coverPrefilled && (covers.landscape || covers.portrait)) {
-        reportProgress("\u6b63\u5728\u5feb\u901f\u91cd\u8bd5\u4e0a\u4f20\u6296\u97f3\u5c01\u9762");
-        coverPrefilled = await this.tryUploadCover(page, platform, covers);
-      }
       reportProgress("\u6b63\u5728\u5173\u95ed\u6296\u97f3\u8bdd\u9898\u6d6e\u5c42");
       await this.dismissDouyinTopicList(page);
       reportProgress(bodyPrefilled ? "\u6b63\u5728\u6821\u9a8c\u6296\u97f3\u6b63\u6587\u548c\u8bdd\u9898" : "\u6b63\u5728\u5feb\u901f\u8865\u586b\u6296\u97f3\u6b63\u6587\u548c\u8bdd\u9898");
+      bodyPrefilled = await this.ensureDouyinBody(page, post);
+      reportProgress("\u6b63\u5728\u4e0a\u4f20\u6296\u97f3\u5c01\u9762\u5e76\u7b49\u5f85\u751f\u6548");
+      let coverPrefilled = await this.tryUploadCover(page, platform, covers);
+      if (!coverPrefilled && (covers.landscape || covers.portrait)) {
+        reportProgress("\u6b63\u5728\u91cd\u8bd5\u6296\u97f3\u5c01\u9762\uff0c\u5e76\u7b49\u5f85\u5c01\u9762\u7a97\u53e3\u5173\u95ed");
+        coverPrefilled = await this.tryUploadCover(page, platform, covers);
+      }
+      if (!coverPrefilled && (covers.landscape || covers.portrait)) {
+        reportProgress("\u6296\u97f3\u5c01\u9762\u672a\u786e\u8ba4\u751f\u6548\uff0c\u5df2\u505c\u5728\u5f53\u524d\u9875\u9762\u4fbf\u4e8e\u624b\u52a8\u5904\u7406");
+        return {
+          browserMode: "managed" as const,
+          copied: true,
+          loginRequired: false,
+          uploadPrefilled: Boolean(videoInput),
+          titlePrefilled,
+          bodyPrefilled,
+          tagsPrefilled: bodyPrefilled && post.hashtags.length > 0,
+          coverPrefilled: false,
+          declarationPrefilled: false
+        };
+      }
+      reportProgress("\u6b63\u5728\u5c01\u9762\u4e0a\u4f20\u540e\u590d\u6838\u6296\u97f3\u6b63\u6587\u548c\u8bdd\u9898");
       bodyPrefilled = await this.ensureDouyinBody(page, post);
       reportProgress("\u6b63\u5728\u9009\u62e9\u4f5c\u8005\u58f0\u660e\uff1a\u5185\u5bb9\u7531AI\u751f\u6210");
       const declarationPrefilled = await this.trySelectAiDeclaration(page, platform);
@@ -428,9 +444,10 @@ export class Publisher {
 
       let added = false;
       while (!added && Date.now() < deadline) {
-        const input = (await this.findDouyinTopicInput(page)) || ((await this.openDouyinTopicInput(page)) ? await this.findDouyinTopicInput(page) : null);
+        const input = await this.findDouyinTopicInput(page);
         if (!input) {
-          await page.waitForTimeout(400);
+          added = await this.tryFillDouyinInlineTopic(page, tag);
+          if (!added) await page.waitForTimeout(400);
           continue;
         }
         await input.click({ timeout: 1000 }).catch(() => undefined);
@@ -441,11 +458,8 @@ export class Publisher {
         await page.keyboard.press("Enter").catch(() => undefined);
         await page.waitForTimeout(600);
         if (!(await this.hasDouyinTopic(page, tag))) {
-          const option = page.getByText(new RegExp(escapeRegExp(tag))).first();
-          if (await option.isVisible({ timeout: 800 }).catch(() => false)) {
-            await option.click({ timeout: 1000 }).catch(() => undefined);
-            await page.waitForTimeout(500);
-          }
+          await this.clickDouyinFirstTopicSuggestion(page, tag);
+          await page.waitForTimeout(500);
         }
         added = await this.hasDouyinTopic(page, tag);
       }
@@ -1220,17 +1234,18 @@ export class Publisher {
     if (landscape) {
       if (!(await this.clickDouyinCoverEditorText(page, "\u8bbe\u7f6e\u6a2a\u5c01\u9762", "top", 5000))) return false;
       if (!(await this.uploadDouyinCoverFile(page, landscape))) return false;
+      if (!(await this.waitForDouyinCoverApplied(page, 60_000))) return false;
     }
 
     if (portrait) {
       if (!(await this.clickDouyinCoverEditorText(page, "\u8bbe\u7f6e\u7ad6\u5c01\u9762", "top", 5000))) return false;
       if (!(await this.uploadDouyinCoverFile(page, portrait))) return false;
+      if (!(await this.waitForDouyinCoverApplied(page, 60_000))) return false;
     }
 
-    const completed = await this.clickDouyinCoverEditorText(page, "\u5b8c\u6210", "bottom", 6000);
+    const completed = await this.clickDouyinCoverEditorText(page, "\u5b8c\u6210", "bottom", 30_000);
     if (!completed) return false;
-    await this.waitForCoverDialogClosed(page, 2500);
-    return true;
+    return this.waitForCoverDialogClosed(page, 15_000);
   }
 
   private async uploadKuaishouCover(page: Page, coverPath: string) {
@@ -1372,16 +1387,9 @@ export class Publisher {
   }
 
   private async uploadDouyinCoverFile(page: Page, coverPath: string) {
-    const directInput = await this.waitForDouyinCoverInput(page, 1200);
-    if (directInput) {
-      await directInput.setInputFiles(coverPath);
-      await page.waitForTimeout(350);
-      return true;
-    }
-
     this.expectedFileChooserFiles.set(page, coverPath);
     try {
-      const fileChooserPromise = page.waitForEvent("filechooser", { timeout: 2000 }).catch(() => null);
+      const fileChooserPromise = page.waitForEvent("filechooser", { timeout: 5000 }).catch(() => null);
       if (!(await this.clickDouyinCoverEditorText(page, WORD.uploadCover, "bottom", 5000))) return false;
       const fileChooser = await fileChooserPromise;
       if (fileChooser) {
@@ -1389,15 +1397,45 @@ export class Publisher {
         await page.waitForTimeout(350);
         return true;
       }
+
+      const input = await this.waitForDouyinCoverInput(page, 5000);
+      if (!input) return false;
+      await input.setInputFiles(coverPath);
+      await page.waitForTimeout(350);
+      return true;
     } finally {
       this.expectedFileChooserFiles.delete(page);
     }
+  }
 
-    const input = await this.waitForDouyinCoverInput(page, 3000);
-    if (!input) return false;
-    await input.setInputFiles(coverPath);
-    await page.waitForTimeout(350);
-    return true;
+  private async waitForDouyinCoverApplied(page: Page, timeoutMs: number) {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const state = await page
+        .evaluate(() => {
+          const dialogs = Array.from(document.querySelectorAll('[role="dialog"],.semi-modal-content,.semi-modal,.ant-modal-content'));
+          const dialog = dialogs.find((element) => (element.textContent || "").includes("\u5c01\u9762")) || document.body;
+          const text = (dialog.textContent || "").replace(/\s+/g, "");
+          const uploading = /\u4e0a\u4f20\u4e2d|\u751f\u6210\u4e2d|\u5904\u7406\u4e2d|loading/i.test(text);
+          const failed = /\u4e0a\u4f20\u5931\u8d25|\u91cd\u8bd5|\u5931\u8d25/.test(text);
+          const hasImage = Array.from(dialog.querySelectorAll("img")).some((image) => {
+            const rect = image.getBoundingClientRect();
+            return rect.width > 20 && rect.height > 20 && Boolean(image.currentSrc || image.src);
+          });
+          const hasBlobBackground = Array.from(dialog.querySelectorAll("*")).some((element) => {
+            const rect = element.getBoundingClientRect();
+            const background = getComputedStyle(element).backgroundImage;
+            return rect.width > 20 && rect.height > 20 && /blob:|data:image|http/.test(background);
+          });
+          return { uploading, failed, hasImage, hasBlobBackground };
+        })
+        .catch(() => ({ uploading: false, failed: false, hasImage: false, hasBlobBackground: false }));
+
+      if (state.failed) return false;
+      if (!state.uploading && (state.hasImage || state.hasBlobBackground)) return true;
+      await page.waitForTimeout(800);
+    }
+    return false;
   }
 
   private async waitForDouyinCoverInput(page: Page, timeoutMs: number) {
@@ -2358,13 +2396,13 @@ export class Publisher {
         .catch(() => "");
 
     let actual = await read();
-    if (actual !== normalizeEditorText(expected)) {
+    if (!this.editorTextMatchesExpected(actual, expected)) {
       await this.fillDouyinIntroEditor(page, editor, expected, 1500);
       await page.waitForTimeout(250);
       actual = await read();
     }
 
-    const bodyMatches = actual === normalizeEditorText(expected);
+    const bodyMatches = this.editorTextMatchesExpected(actual, expected);
     const topicsMatch = post.hashtags.length ? await this.tryFillDouyinTopics(page, post.hashtags, 10_000) : true;
     const matches = bodyMatches && topicsMatch;
     console.log("[publisher:douyin-body]", {
@@ -2581,6 +2619,89 @@ export class Publisher {
       }
     }
     return false;
+  }
+
+  private async tryFillDouyinInlineTopic(page: Page, tag: string) {
+    const editor = await this.findDouyinBodyEditor(page, "");
+    if (!editor) return false;
+
+    await editor.scrollIntoViewIfNeeded({ timeout: 1000 }).catch(() => undefined);
+    if (!(await this.hasDouyinTopicSuggestionPopup(page))) {
+      if (!(await this.openDouyinTopicInput(page))) {
+        await editor.click({ timeout: 1000 }).catch(() => undefined);
+        await page.keyboard.press("End").catch(() => undefined);
+        await page.keyboard.insertText(" #");
+      }
+      await page.waitForTimeout(300);
+    }
+
+    await page.keyboard.insertText(tag);
+    await page.waitForTimeout(700);
+    await page.keyboard.press("Enter").catch(() => undefined);
+    await page.waitForTimeout(700);
+
+    if (await this.hasDouyinTopic(page, tag)) return true;
+    await this.clickDouyinFirstTopicSuggestion(page, tag);
+    await page.waitForTimeout(500);
+    return this.hasDouyinTopic(page, tag);
+  }
+
+  private async hasDouyinTopicSuggestionPopup(page: Page) {
+    return page
+      .evaluate(() => {
+        const editors = Array.from(document.querySelectorAll('[contenteditable="true"], textarea, [role="textbox"]'));
+        const editorRects = editors.map((element) => element.getBoundingClientRect()).filter((rect) => rect.width > 100 && rect.height > 30);
+        const editorBottom = editorRects.length ? Math.min(...editorRects.map((rect) => rect.bottom)) : 0;
+        return Array.from(document.querySelectorAll("div,li,span,button")).some((element) => {
+          const rect = element.getBoundingClientRect();
+          if (rect.width < 120 || rect.height < 24 || rect.top < editorBottom - 8) return false;
+          const style = getComputedStyle(element);
+          if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || "1") <= 0.01) return false;
+          if (element.closest('[contenteditable="true"], textarea, [role="textbox"]')) return false;
+          const text = (element.textContent || "").replace(/\s+/g, " ").trim();
+          return /^#\s*\S+/.test(text);
+        });
+      })
+      .catch(() => false);
+  }
+
+  private async clickDouyinFirstTopicSuggestion(page: Page, preferredTag = "") {
+    const point = await page
+      .evaluate((rawPreferredTag) => {
+        const preferredTag = rawPreferredTag.replace(/^#/, "").trim();
+        const editors = Array.from(document.querySelectorAll('[contenteditable="true"], textarea, [role="textbox"]'));
+        const editorRects = editors.map((element) => element.getBoundingClientRect()).filter((rect) => rect.width > 100 && rect.height > 30);
+        const editorBottom = editorRects.length ? Math.min(...editorRects.map((rect) => rect.bottom)) : 0;
+        const candidates = Array.from(document.querySelectorAll("div,li,span,button"))
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            const text = (element.textContent || "").replace(/\s+/g, " ").trim();
+            const visible =
+              rect.width >= 120 &&
+              rect.height >= 24 &&
+              rect.top >= editorBottom - 8 &&
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity || "1") > 0.01;
+            const outsideEditor = !element.closest('[contenteditable="true"], textarea, [role="textbox"]');
+            const looksLikeTopic = /^#\s*\S+/.test(text);
+            const className = String(element.getAttribute("class") || "");
+            const suggestionScore =
+              /suggest|option|select|dropdown|popup|list|item/i.test(className) || rect.width > 300 || rect.height > 36 ? 1000 : 0;
+            const preferredScore = preferredTag && text.replace(/\s+/g, "").includes(preferredTag) ? 2000 : 0;
+            return { element, rect, text, visible, outsideEditor, looksLikeTopic, score: preferredScore + suggestionScore - rect.top / 1000 };
+          })
+          .filter((candidate) => candidate.visible && candidate.outsideEditor && candidate.looksLikeTopic)
+          .sort((left, right) => right.score - left.score || left.rect.top - right.rect.top || left.rect.left - right.rect.left);
+        const target = candidates[0];
+        if (!target) return null;
+        return { x: target.rect.left + Math.min(36, Math.max(12, target.rect.width / 6)), y: target.rect.top + target.rect.height / 2 };
+      }, preferredTag)
+      .catch(() => null);
+    if (!point) return false;
+    await page.mouse.click(point.x, point.y).catch(() => undefined);
+    return true;
   }
 
   private async hasDouyinTopic(page: Page, tag: string) {
