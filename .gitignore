@@ -1,5 +1,11 @@
 node_modules/
 dist/
 .env
+!.env.example
 data/
+temp/
+diagnostics/
+runtime/
+交付包/
+卖点宣传/
 *.log

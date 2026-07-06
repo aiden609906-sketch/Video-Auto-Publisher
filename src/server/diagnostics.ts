@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import type { DiagnosticSummary, Platform } from "../shared/types.js";
 
 export type DiagnosticRecord = DiagnosticSummary & {
+  accountId?: string;
+  accountName?: string;
   adapterVersion: string;
   startedAt: string;
   completedAt: string;

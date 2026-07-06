@@ -9,12 +9,22 @@ export interface PlatformPost {
   id: string;
   videoId: string;
   platform: Platform;
+  accountId: string;
   enabled: boolean;
   title: string;
   body: string;
   hashtags: string[];
   status: PostStatus;
   lastError: string | null;
+}
+
+export interface AccountProfile {
+  id: string;
+  platform: Platform;
+  name: string;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface CoverImage {
@@ -57,6 +67,7 @@ export interface AppSettings {
 
 export interface AppData {
   version: 1;
+  accounts: AccountProfile[];
   videos: VideoTask[];
   settings: Pick<AppSettings, "defaultStyle" | "defaultPlatforms">;
 }

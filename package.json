@@ -9,7 +9,8 @@
     "dev:client": "vite --host 127.0.0.1 --port 5173",
     "start": "tsx src/server/index.ts",
     "build": "tsc --noEmit && vite build",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test:accounts": "node --import tsx --test tests/account-matrix.test.ts"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.1.1",

@@ -13,12 +13,15 @@ import {
   Send,
   Settings,
   Sparkles,
+  Trash2,
+  UserPlus,
   Wifi
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   PLATFORM_LABELS,
   PLATFORMS,
+  type AccountProfile,
   type AiConfigView,
   type AiProvider,
   type AppSettings,
@@ -27,6 +30,7 @@ import {
   type Platform,
   type VideoTask
 } from "../shared/types";
+import { resolveSelectedVideoId } from "./selection";
 
 type Notice = { type: "ok" | "error"; text: string } | null;
 type PublishProgress = {
@@ -82,6 +86,7 @@ function formatBytes(value: number) {
 
 export function App() {
   const [videos, setVideos] = useState<VideoTask[]>([]);
+  const [accounts, setAccounts] = useState<AccountProfile[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [selectedId, setSelectedId] = useState<string>("");
   const [busy, setBusy] = useState<string>("");
@@ -94,14 +99,15 @@ export function App() {
   const [now, setNow] = useState(() => Date.now());
 
   const selected = useMemo(
-    () => videos.find((video) => video.id === selectedId) || videos[0] || null,
+    () => videos.find((video) => video.id === selectedId) || null,
     [selectedId, videos]
   );
 
   async function refresh() {
-    const [nextSettings, nextVideos, nextEnvironment, nextDiagnostics] = await Promise.all([
+    const [nextSettings, nextVideos, nextAccounts, nextEnvironment, nextDiagnostics] = await Promise.all([
       api<AppSettings>("/api/settings"),
       api<VideoTask[]>("/api/videos"),
+      api<AccountProfile[]>("/api/accounts"),
       api<EnvironmentReport>("/api/environment"),
       api<DiagnosticSummary[]>("/api/diagnostics")
     ]);
@@ -115,9 +121,10 @@ export function App() {
         : nextSettings
     );
     setVideos(nextVideos);
+    setAccounts(nextAccounts);
     setEnvironment(nextEnvironment);
     setDiagnostics(nextDiagnostics);
-    if (!selectedId && nextVideos[0]) setSelectedId(nextVideos[0].id);
+    setSelectedId((current) => resolveSelectedVideoId(current, nextVideos));
   }
 
   async function run<T>(key: string, task: () => Promise<T>, ok?: string) {
@@ -198,7 +205,7 @@ export function App() {
         <header className="topbar">
           <div>
             <h2>{selected?.filename || "没有任务"}</h2>
-            <p>{selected ? selected.filePath : "把视频放入 inbox 文件夹后会自动出现"}</p>
+            <p>{selected ? selected.filePath : "把视频和同名封面放入 inbox 文件夹后点击扫描"}</p>
           </div>
           {selected && (
             <div className="actions">
@@ -351,7 +358,7 @@ export function App() {
                     <span>
                       {cover
                         ? `${cover.width}x${cover.height} · ${cover.source === "manual" ? "手动上传" : "自动扫描"}`
-                        : "扫描 inbox 图片或手动上传"}
+                        : "点击扫描匹配同名图片，或手动上传"}
                     </span>
                     <label className="uploadButton">
                       <input
@@ -421,6 +428,8 @@ export function App() {
             {selected.posts.map((post) => {
               const progress = publishProgress[post.id];
               const isOpening = busy === `${post.id}-open`;
+              const platformAccounts = accounts.filter((account) => account.platform === post.platform);
+              const activeAccount = platformAccounts.find((account) => account.id === post.accountId) || platformAccounts[0];
               const elapsedSeconds =
                 progress?.startedAt && Date.parse(progress.startedAt) > 0
                   ? Math.max(0, Math.floor((now - Date.parse(progress.startedAt)) / 1000))
@@ -447,6 +456,46 @@ export function App() {
                     <span>{PLATFORM_LABELS[post.platform]}</span>
                   </label>
                   <span className={`pill ${post.status}`}>{statusLabels[post.status]}</span>
+                </div>
+
+                <div className="accountRow">
+                  <label className="field accountSelect">
+                    发布账号
+                    <select
+                      value={activeAccount?.id || ""}
+                      onChange={(event) => {
+                        const accountId = event.target.value;
+                        patchLocal(selected.id, post.platform, { accountId });
+                        void run(`${post.id}-account`, () =>
+                          api(`/api/videos/${selected.id}/posts/${post.platform}`, {
+                            method: "PATCH",
+                            body: JSON.stringify({ accountId })
+                          })
+                        );
+                      }}
+                    >
+                      {platformAccounts.map((account) => (
+                        <option value={account.id} key={account.id}>
+                          {account.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="accountActions">
+                    <button title="新增账号" onClick={() => addAccount(post.platform, selected.id)}>
+                      <UserPlus size={16} />
+                    </button>
+                    <button title="重命名账号" disabled={!activeAccount} onClick={() => activeAccount && renameAccount(activeAccount)}>
+                      <Save size={16} />
+                    </button>
+                    <button
+                      title="删除账号"
+                      disabled={!activeAccount || activeAccount.isDefault}
+                      onClick={() => activeAccount && deleteAccount(activeAccount)}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
                 </div>
 
                 <label className="field">
@@ -493,7 +542,7 @@ export function App() {
                   <button
                     disabled={!post.enabled || isOpening}
                     title="打开平台发布页"
-                    onClick={() => openPost(selected.id, post.platform, post.id)}
+                    onClick={() => openPost(selected.id, post.platform, post.id, activeAccount?.id || post.accountId)}
                   >
                     {isOpening ? <Loader2 className="spin" size={17} /> : <ExternalLink size={17} />}
                     {isOpening ? "自动操作中" : "打开发布"}
@@ -515,11 +564,11 @@ export function App() {
                   </button>
                   <button
                     disabled={!post.enabled}
-                    title="清理该平台浏览器登录环境"
-                    onClick={() => resetBrowserProfile(post.platform)}
+                    title="清理当前账号的浏览器登录环境"
+                    onClick={() => resetBrowserProfile(post.platform, post.accountId)}
                   >
                     <RefreshCcw size={17} />
-                    重置浏览器
+                    重置账号
                   </button>
                 </div>
                 {progress && (
@@ -643,15 +692,62 @@ export function App() {
     );
   }
 
-  async function resetBrowserProfile(platform?: Platform) {
-    const label = platform ? PLATFORM_LABELS[platform] : "全部平台";
+  async function addAccount(platform: Platform, videoId?: string) {
+    const name = window.prompt(`请输入${PLATFORM_LABELS[platform]}账号名称`, `${PLATFORM_LABELS[platform]}账号${accounts.filter((account) => account.platform === platform).length + 1}`);
+    if (name === null) return;
+    await run(
+      `account-add-${platform}`,
+      async () => {
+        const account = await api<AccountProfile>("/api/accounts", {
+          method: "POST",
+          body: JSON.stringify({ platform, name })
+        });
+        if (videoId) {
+          await api(`/api/videos/${videoId}/posts/${platform}`, {
+            method: "PATCH",
+            body: JSON.stringify({ accountId: account.id })
+          });
+        }
+        return account;
+      },
+      videoId ? "账号已添加，并已切换当前任务" : "账号已添加"
+    );
+  }
+
+  async function renameAccount(account: AccountProfile) {
+    const name = window.prompt("请输入新的账号名称", account.name);
+    if (name === null) return;
+    await run(
+      `account-rename-${account.id}`,
+      () =>
+        api<AccountProfile>(`/api/accounts/${account.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ name })
+        }),
+      "账号名称已保存"
+    );
+  }
+
+  async function deleteAccount(account: AccountProfile) {
+    if (account.isDefault) return;
+    if (!window.confirm(`将删除账号“${account.name}”及其浏览器登录环境，相关发布任务会回到默认账号。确定继续吗？`)) return;
+    await run(
+      `account-delete-${account.id}`,
+      () => api<AccountProfile[]>(`/api/accounts/${account.id}`, { method: "DELETE" }),
+      "账号已删除"
+    );
+  }
+
+  async function resetBrowserProfile(platform?: Platform, accountId?: string) {
+    const account = accountId ? accounts.find((item) => item.id === accountId) : null;
+    const label = account ? `${PLATFORM_LABELS[account.platform]}-${account.name}` : platform ? PLATFORM_LABELS[platform] : "全部平台";
     if (!window.confirm(`将清理 ${label} 的浏览器登录环境，之后需要重新登录。确定继续吗？`)) return;
     await run(
-      platform ? `reset-browser-${platform}` : "reset-browser-all",
+      accountId ? `reset-browser-${accountId}` : platform ? `reset-browser-${platform}` : "reset-browser-all",
       () =>
         api("/api/browser-profiles/reset", {
           method: "POST",
-          body: JSON.stringify(platform ? { platform } : {})
+          body: JSON.stringify(accountId ? { accountId } : platform ? { platform } : {})
         }),
       `${label} 浏览器环境已重置`
     );
@@ -666,13 +762,13 @@ export function App() {
     }
   }
 
-  async function openPost(videoId: string, platform: Platform, postId: string) {
+  async function openPost(videoId: string, platform: Platform, postId: string, accountId: string) {
     const startedAt = new Date().toISOString();
     setPublishProgress((current) => ({
       ...current,
       [postId]: {
         running: true,
-        stage: "正在启动自动发布",
+        stage: "正在启动发布辅助",
         startedAt,
         updatedAt: startedAt
       }
@@ -683,24 +779,36 @@ export function App() {
       async () => {
         const response = await api<{
           result: {
+            browserMode: "managed" | "manual";
+            copied: boolean;
             loginRequired: boolean;
             uploadPrefilled: boolean;
             titlePrefilled: boolean;
             bodyPrefilled: boolean;
             tagsPrefilled: boolean;
             coverPrefilled: boolean;
+            declarationPrefilled: boolean;
           };
-        }>(`/api/videos/${videoId}/posts/${platform}/open`, { method: "POST" });
+        }>(`/api/videos/${videoId}/posts/${platform}/open`, {
+          method: "POST",
+          body: JSON.stringify({ accountId })
+        });
         const result = response.result;
         if (result.loginRequired) {
           setNotice({ type: "error", text: "请先在打开的浏览器中登录该平台，登录完成后再点一次打开发布" });
+        } else if (result.browserMode === "manual") {
+          setNotice({
+            type: "ok",
+            text: "小红书已改为人工上传模式：已复制文案，并用当前账号的独立浏览器窗口打开发布页和素材文件夹，请在网页里手动选择视频/封面后发布"
+          });
         } else {
           const fields = [
             { label: "视频", done: result.uploadPrefilled, expected: true },
             { label: "标题", done: result.titlePrefilled, expected: platform !== "kuaishou" },
             { label: "正文", done: result.bodyPrefilled, expected: true },
             { label: "话题", done: result.tagsPrefilled, expected: true },
-            { label: "封面", done: result.coverPrefilled, expected: true }
+            { label: "封面", done: result.coverPrefilled, expected: true },
+            { label: "作者声明", done: result.declarationPrefilled, expected: ["douyin", "kuaishou", "bilibili"].includes(platform) }
           ].filter((field) => field.expected);
           const filled = fields.filter((field) => field.done).map((field) => field.label);
           const missing = fields.filter((field) => !field.done).map((field) => field.label);

@@ -2,13 +2,13 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import chokidar from "chokidar";
 import { imageSizeFromFile } from "image-size/fromFile";
 import type { Store } from "./store.js";
 import type { CoverImage, CoverOrientation, VideoTask } from "../shared/types.js";
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".m4v"]);
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+export const SCANNER_MODE = "manual" as const;
 
 async function sha256(filePath: string) {
   const hash = createHash("sha256");
@@ -44,21 +44,6 @@ export class VideoScanner {
 
   async start() {
     await mkdir(this.inboxDir, { recursive: true });
-    const existing = await readdir(this.inboxDir, { withFileTypes: true });
-    const filePaths = existing.filter((entry) => entry.isFile()).map((entry) => path.join(this.inboxDir, entry.name));
-    await Promise.all(filePaths.filter((filePath) => isVideo(filePath)).map((filePath) => this.process(filePath)));
-    await this.scanCovers(filePaths);
-
-    chokidar
-      .watch(this.inboxDir, {
-        ignoreInitial: true,
-        depth: 0,
-        awaitWriteFinish: false,
-        ignored: (filePath) => path.basename(filePath).startsWith(".")
-      })
-      .on("add", (filePath) => void this.process(filePath))
-      .on("change", (filePath) => void this.process(filePath))
-      .on("error", (error) => console.error("[scanner:watcher]", error));
   }
 
   async scanNow() {
@@ -133,20 +118,7 @@ export class VideoScanner {
   }
 
   private findCoverTarget(filePath: string) {
-    const videos = this.store.listVideos().filter((video) => isPathInside(this.inboxDir, video.filePath));
-    if (videos.length === 1) return videos[0];
-    if (videos.length === 0) return undefined;
-
-    const imageStem = normalizeCoverStem(filePath);
-    if (!imageStem) return undefined;
-
-    const matches = videos
-      .map((video) => ({ video, score: coverMatchScore(imageStem, normalizeStem(video.filename)) }))
-      .filter((match) => match.score > 0)
-      .sort((a, b) => b.score - a.score);
-
-    if (!matches[0] || matches[0].score === matches[1]?.score) return undefined;
-    return matches[0].video;
+    return selectCoverTarget(filePath, this.store.listVideos(), this.inboxDir);
   }
 
   private async scanCovers(filePaths?: string[]) {
@@ -178,6 +150,22 @@ export class VideoScanner {
       }
     }
   }
+}
+
+export function selectCoverTarget(filePath: string, videos: VideoTask[], inboxDir: string) {
+  const inboxVideos = videos.filter((video) => isPathInside(inboxDir, video.filePath));
+  if (inboxVideos.length === 0) return undefined;
+
+  const imageStem = normalizeCoverStem(filePath);
+  if (!imageStem) return undefined;
+
+  const matches = inboxVideos
+    .map((video) => ({ video, score: coverMatchScore(imageStem, normalizeStem(video.filename)) }))
+    .filter((match) => match.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  if (!matches[0] || matches[0].score === matches[1]?.score) return undefined;
+  return matches[0].video;
 }
 
 function isVideo(filePath: string) {

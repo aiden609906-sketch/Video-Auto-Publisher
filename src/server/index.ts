@@ -9,6 +9,7 @@ import { config } from "./config.js";
 import { Diagnostics } from "./diagnostics.js";
 import { getEnvironmentReport } from "./environment.js";
 import { DraftGenerator } from "./openai.js";
+import { resolvePublishAccount } from "./publish-account.js";
 import { ADAPTER_VERSIONS, Publisher } from "./publisher.js";
 import { VideoScanner } from "./scanner.js";
 import { Store } from "./store.js";
@@ -97,6 +98,28 @@ app.get("/api/settings", (_req, res) => {
   });
 });
 
+app.get("/api/accounts", (_req, res) => {
+  res.json(store.listAccounts());
+});
+
+app.post("/api/accounts", async (req, res) => {
+  const platform = requirePlatform(param(req.body?.platform));
+  const name = typeof req.body?.name === "string" ? req.body.name : "";
+  res.json(await store.addAccount(platform, name));
+});
+
+app.patch("/api/accounts/:id", async (req, res) => {
+  const name = typeof req.body?.name === "string" ? req.body.name : undefined;
+  res.json(await store.updateAccount(param(req.params.id), { ...(name !== undefined ? { name } : {}) }));
+});
+
+app.delete("/api/accounts/:id", async (req, res) => {
+  const account = requireAccount(param(req.params.id));
+  const accounts = await store.deleteAccount(account.id);
+  await publisher.resetProfile(account.platform, account.id);
+  res.json(accounts);
+});
+
 app.get("/api/ai-config", (_req, res) => {
   res.json(aiConfig.view());
 });
@@ -132,9 +155,16 @@ app.get("/api/diagnostics/:id/file", (req, res) => {
 });
 
 app.post("/api/browser-profiles/reset", async (req, res) => {
+  const accountId = typeof req.body?.accountId === "string" ? param(req.body.accountId) : "";
+  if (accountId) {
+    const account = requireAccount(accountId);
+    await publisher.resetProfile(account.platform, account.id);
+    res.json({ ok: true, platform: account.platform, accountId: account.id });
+    return;
+  }
   const platform = req.body?.platform ? requirePlatform(param(req.body.platform)) : undefined;
   await publisher.resetProfile(platform);
-  res.json({ ok: true, platform: platform || null });
+  res.json({ ok: true, platform: platform || null, accountId: null });
 });
 
 app.patch("/api/settings", async (req, res) => {
@@ -220,6 +250,7 @@ app.post("/api/videos/:id/covers/:orientation", upload.single("cover"), async (r
 app.patch("/api/videos/:id/posts/:platform", async (req, res) => {
   const platform = requirePlatform(param(req.params.platform));
   const body = req.body as {
+    accountId?: string;
     enabled?: boolean;
     title?: string;
     body?: string;
@@ -254,6 +285,9 @@ app.post("/api/videos/:id/posts/:platform/open", async (req, res) => {
   const platform = requirePlatform(param(req.params.platform));
   const video = requireVideo(param(req.params.id));
   const post = video.posts.find((item) => item.platform === platform)!;
+  const requestedAccountId = typeof req.body?.accountId === "string" ? param(req.body.accountId) : "";
+  const account = resolvePublishAccount(post, requestedAccountId, (id) => store.getAccount(id));
+  if (post.accountId !== account.id) await store.updatePost(video.id, platform, { accountId: account.id });
   const key = progressKey(video.id, platform);
   const startedAt = new Date().toISOString();
   const progressHistory: Array<{ stage: string; at: string }> = [];
@@ -267,17 +301,23 @@ app.post("/api/videos/:id/posts/:platform/open", async (req, res) => {
     });
   };
 
-  setProgress("\u6b63\u5728\u542f\u52a8\u81ea\u52a8\u53d1\u5e03");
+  setProgress("\u6b63\u5728\u542f\u52a8\u53d1\u5e03\u8f85\u52a9");
   try {
     const started = Date.now();
-    const result = await publisher.open(platform, video.filePath, post, selectCovers(video), setProgress);
+    const result = await publisher.open(platform, account.id, video.filePath, post, selectCovers(video), setProgress);
     console.log("[publisher:result]", platform, result);
-    setProgress("\u81ea\u52a8\u64cd\u4f5c\u5b8c\u6210\uff0c\u6b63\u5728\u5237\u65b0\u4efb\u52a1\u72b6\u6001");
+    setProgress(
+      result.browserMode === "manual"
+        ? "\u4eba\u5de5\u53d1\u5e03\u6750\u6599\u5df2\u51c6\u5907\uff0c\u6b63\u5728\u5237\u65b0\u4efb\u52a1\u72b6\u6001"
+        : "\u81ea\u52a8\u64cd\u4f5c\u5b8c\u6210\uff0c\u6b63\u5728\u5237\u65b0\u4efb\u52a1\u72b6\u6001"
+    );
     const updated = await store.updatePost(video.id, platform, { status: "opened", lastError: null });
     await store.updateVideo(video.id, { status: "opened" });
     await diagnostics.write({
       createdAt: new Date().toISOString(),
       platform,
+      accountId: account.id,
+      accountName: account.name,
       videoId: video.id,
       filename: video.filename,
       status: "ok",
@@ -288,14 +328,16 @@ app.post("/api/videos/:id/posts/:platform/open", async (req, res) => {
       progress: progressHistory,
       result
     });
-    setProgress("\u81ea\u52a8\u64cd\u4f5c\u5b8c\u6210", false);
+    setProgress(result.browserMode === "manual" ? "\u4eba\u5de5\u53d1\u5e03\u6750\u6599\u5df2\u51c6\u5907" : "\u81ea\u52a8\u64cd\u4f5c\u5b8c\u6210", false);
     res.json({ result, video: updated });
   } catch (error) {
     const message = error instanceof Error ? error.message : "\u672a\u77e5\u9519\u8bef";
-    setProgress(`\u81ea\u52a8\u64cd\u4f5c\u5931\u8d25\uff1a${message}`, false);
+    setProgress(`\u53d1\u5e03\u8f85\u52a9\u5931\u8d25\uff1a${message}`, false);
     await diagnostics.write({
       createdAt: new Date().toISOString(),
       platform,
+      accountId: account.id,
+      accountName: account.name,
       videoId: video.id,
       filename: video.filename,
       status: "error",
@@ -359,6 +401,12 @@ function requireVideo(id: string) {
   const video = store.getVideo(id);
   if (!video) throw new Error("Video task not found");
   return video;
+}
+
+function requireAccount(id: string) {
+  const account = store.getAccount(id);
+  if (!account) throw new Error("Account not found");
+  return account;
 }
 
 function selectCovers(video: VideoTask) {

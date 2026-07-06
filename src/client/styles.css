@@ -584,6 +584,29 @@ select:focus {
   gap: 12px;
 }
 
+.accountRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.accountSelect select {
+  height: 38px;
+  padding: 0 10px;
+}
+
+.accountActions {
+  display: flex;
+  gap: 6px;
+}
+
+.accountActions button {
+  width: 38px;
+  padding: 0;
+  flex: 0 0 38px;
+}
+
 .platformCheck span {
   font-size: 17px;
   font-weight: 650;
