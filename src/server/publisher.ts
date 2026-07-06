@@ -16,7 +16,7 @@ const PLATFORM_URLS: Record<Platform, string> = {
 };
 
 export const ADAPTER_VERSIONS: Record<Platform, string> = {
-  douyin: "2026.07.06-cover-wait-inline-topic-max5-v1",
+  douyin: "2026.07.06-cover-wait-inline-topic-max5-declaration-v1",
   xiaohongshu: "2026.06.25-manual-profile-v1",
   kuaishou: "2026.07.05-kuaishou-cover-real-page-v20",
   bilibili: "2026.07.05-bilibili-ai-declaration-real-page-v2"
@@ -1083,13 +1083,116 @@ export class Publisher {
   private async finishAiDeclarationSelection(page: Page, platform: Platform, selected: boolean) {
     if (!selected) return false;
     if (platform !== "douyin") return true;
+    await this.selectDouyinAiDeclarationInModal(page, 3_000);
+    if (await this.clickDouyinDeclarationConfirm(page, 6_000)) return true;
     for (const label of ["\u786e\u5b9a", "\u786e\u8ba4", "\u5b8c\u6210"]) {
       if (await this.clickVisibleDialogText(page, label, 5000)) {
         await page.waitForTimeout(800);
-        return true;
+        if (!(await this.hasVisibleDouyinDeclarationModal(page))) return true;
       }
     }
+    return !(await this.hasVisibleDouyinDeclarationModal(page));
+  }
+
+  private async selectDouyinAiDeclarationInModal(page: Page, timeoutMs: number) {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const point = await page
+        .evaluate(() => {
+          const visible = (element: Element) => {
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            return !!rect.width && !!rect.height && style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || "1") > 0.01;
+          };
+          const dialogs = Array.from(document.querySelectorAll('[role="dialog"],.semi-modal,.semi-modal-content,.ant-modal,.ant-modal-content'));
+          const dialog = dialogs.find((element) => visible(element) && /声明类型|添加声明|作者声明/.test(element.textContent || ""));
+          if (!dialog) return null;
+          const options = Array.from(dialog.querySelectorAll("label,[role='radio'],[role='option'],button,div,span"))
+            .map((element) => {
+              const rect = element.getBoundingClientRect();
+              const text = (element.textContent || "").replace(/\s+/g, "");
+              return { element, rect, text };
+            })
+            .filter(({ element, rect, text }) => visible(element) && rect.width > 120 && rect.height >= 24 && /内容由AI生成|由AI生成|AI生成/.test(text))
+            .sort((left, right) => left.text.length - right.text.length || left.rect.width * left.rect.height - right.rect.width * right.rect.height);
+          const target = options[0];
+          if (!target) return null;
+          return {
+            x: target.rect.left + Math.min(28, Math.max(12, target.rect.width / 8)),
+            y: target.rect.top + target.rect.height / 2
+          };
+        })
+        .catch(() => null);
+      if (point) {
+        await page.mouse.click(point.x, point.y).catch(() => undefined);
+        await page.waitForTimeout(400);
+        return true;
+      }
+      await page.waitForTimeout(300);
+    }
     return false;
+  }
+
+  private async clickDouyinDeclarationConfirm(page: Page, timeoutMs: number) {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const point = await page
+        .evaluate(() => {
+          const visible = (element: Element) => {
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            return !!rect.width && !!rect.height && style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || "1") > 0.01;
+          };
+          const dialogs = Array.from(document.querySelectorAll('[role="dialog"],.semi-modal,.semi-modal-content,.ant-modal,.ant-modal-content'));
+          const dialog = dialogs.find((element) => visible(element) && /声明类型|添加声明|作者声明/.test(element.textContent || ""));
+          if (!dialog) return null;
+          const buttons = Array.from(dialog.querySelectorAll("button,[role='button'],.semi-button,.ant-btn,div,span"))
+            .map((element) => {
+              const rect = element.getBoundingClientRect();
+              const style = getComputedStyle(element);
+              const className = String((element as HTMLElement).className || "");
+              const text = (element.textContent || "").replace(/\s+/g, "");
+              const disabled =
+                element.getAttribute("aria-disabled") === "true" ||
+                className.includes("disabled") ||
+                style.cursor === "not-allowed" ||
+                (element instanceof HTMLButtonElement && element.disabled);
+              return { element, rect, text, disabled };
+            })
+            .filter(({ element, rect, text, disabled }) => visible(element) && !disabled && rect.width > 20 && rect.height > 20 && /确定|确认|完成/.test(text))
+            .sort((left, right) => right.rect.top - left.rect.top || right.rect.left - left.rect.left);
+          const target = buttons[0];
+          if (!target) return null;
+          return { x: target.rect.left + target.rect.width / 2, y: target.rect.top + target.rect.height / 2 };
+        })
+        .catch(() => null);
+      if (point) {
+        await page.mouse.click(point.x, point.y).catch(() => undefined);
+        await page.waitForTimeout(700);
+        if (!(await this.hasVisibleDouyinDeclarationModal(page))) return true;
+      }
+      await page.waitForTimeout(400);
+    }
+    return false;
+  }
+
+  private async hasVisibleDouyinDeclarationModal(page: Page) {
+    return page
+      .evaluate(() => {
+        return Array.from(document.querySelectorAll('[role="dialog"],.semi-modal,.semi-modal-content,.ant-modal,.ant-modal-content')).some((element) => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return (
+            !!rect.width &&
+            !!rect.height &&
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            Number(style.opacity || "1") > 0.01 &&
+            /声明类型|添加声明|作者声明/.test(element.textContent || "")
+          );
+        });
+      })
+      .catch(() => false);
   }
 
   private async scrollDeclarationSectionIntoView(page: Page, targetLabel?: string) {

@@ -267,7 +267,7 @@ test("douyin body fill fails when intro cannot be verified", async () => {
 
 test("douyin AI declaration confirms the modal after selecting the AI generated option", async () => {
   const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
-  const clickedLabels: string[] = [];
+  const calls: string[] = [];
   const page = {
     waitForTimeout: async () => undefined
   };
@@ -275,9 +275,13 @@ test("douyin AI declaration confirms the modal after selecting the AI generated 
   hooks.closeTransientMenus = async () => undefined;
   hooks.scrollDeclarationSectionIntoView = async () => undefined;
   hooks.selectAiDeclarationByDom = async () => true;
-  hooks.clickVisibleDialogText = async (_page: unknown, label: string) => {
-    clickedLabels.push(label);
-    return label === "\u786e\u5b9a";
+  hooks.selectDouyinAiDeclarationInModal = async () => {
+    calls.push("select-modal-option");
+    return true;
+  };
+  hooks.clickDouyinDeclarationConfirm = async () => {
+    calls.push("confirm-modal");
+    return true;
   };
 
   const selected = await (hooks.trySelectAiDeclaration as (page: unknown, platform: string) => Promise<boolean>)(
@@ -286,7 +290,7 @@ test("douyin AI declaration confirms the modal after selecting the AI generated 
   );
 
   assert.equal(selected, true);
-  assert.deepEqual(clickedLabels, ["\u786e\u5b9a"]);
+  assert.deepEqual(calls, ["select-modal-option", "confirm-modal"]);
 });
 
 test("AI declaration falls back to declaration labels before selecting the AI generated option", async () => {
@@ -310,9 +314,13 @@ test("AI declaration falls back to declaration labels before selecting the AI ge
     calls.push("ai-option");
     return true;
   };
-  hooks.clickVisibleDialogText = async (_page: unknown, label: string) => {
-    calls.push(`dialog:${label}`);
-    return label === "\u786e\u5b9a";
+  hooks.selectDouyinAiDeclarationInModal = async () => {
+    calls.push("select-modal-option");
+    return true;
+  };
+  hooks.clickDouyinDeclarationConfirm = async () => {
+    calls.push("confirm-modal");
+    return true;
   };
 
   const selected = await (hooks.trySelectAiDeclaration as (page: unknown, platform: string) => Promise<boolean>)(
@@ -321,7 +329,31 @@ test("AI declaration falls back to declaration labels before selecting the AI ge
   );
 
   assert.equal(selected, true);
-  assert.deepEqual(calls, ["dom", "label:\u4f5c\u8005\u58f0\u660e", "dom", "ai-option", "dialog:\u786e\u5b9a"]);
+  assert.deepEqual(calls, ["dom", "label:\u4f5c\u8005\u58f0\u660e", "dom", "ai-option", "select-modal-option", "confirm-modal"]);
+});
+
+test("douyin AI declaration does not report success while the modal remains open", async () => {
+  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
+  const page = {
+    waitForTimeout: async () => undefined
+  };
+
+  hooks.closeTransientMenus = async () => undefined;
+  hooks.scrollDeclarationSectionIntoView = async () => undefined;
+  hooks.selectAiDeclarationByDom = async () => true;
+  hooks.selectDouyinAiDeclarationInModal = async () => true;
+  hooks.clickDouyinDeclarationConfirm = async () => false;
+  hooks.clickVisibleDialogText = async () => false;
+  hooks.clickVisibleText = async () => false;
+  hooks.clickAiGeneratedOption = async () => false;
+  hooks.hasVisibleDouyinDeclarationModal = async () => true;
+
+  const selected = await (hooks.trySelectAiDeclaration as (page: unknown, platform: string) => Promise<boolean>)(
+    page,
+    "douyin"
+  );
+
+  assert.equal(selected, false);
 });
 
 test("kuaishou AI declaration opens the author declaration dropdown before selecting", async () => {
