@@ -103,26 +103,14 @@ test("douyin keeps fallback body fill when first body fill fails", async () => {
   assert.equal(result.declarationPrefilled, true);
 });
 
-test("douyin body fill accepts content already present after the first paste attempt", async () => {
+test("douyin body fill accepts verified intro and topics", async () => {
   const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
-  let editorLookups = 0;
   const page = {
     waitForTimeout: async () => undefined
   };
-  const editor = {};
 
-  hooks.findDouyinBodyEditor = async () => {
-    editorLookups += 1;
-    return editor;
-  };
-  hooks.pasteIntoEditable = async () => false;
-  hooks.verifyDouyinBody = async () => true;
-  hooks.tryFillSelectors = async () => {
-    throw new Error("douyin body should not use generic selector retry");
-  };
-  hooks.tryFillSemantic = async () => {
-    throw new Error("douyin body should not use semantic scan when editor is found");
-  };
+  hooks.tryFillDouyinIntro = async () => true;
+  hooks.tryFillDouyinTopics = async () => true;
 
   const filled = await (hooks.tryFillBody as (page: unknown, platform: string, post: PlatformPost, timeoutMs: number) => Promise<boolean>)(
     page,
@@ -132,23 +120,16 @@ test("douyin body fill accepts content already present after the first paste att
   );
 
   assert.equal(filled, true);
-  assert.equal(editorLookups, 1);
 });
 
-test("douyin body fill falls back to generic fill when direct editor paste fails", async () => {
+test("douyin body fill fails when intro cannot be verified", async () => {
   const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
-  let fallbackCalls = 0;
   const page = {
     waitForTimeout: async () => undefined
   };
 
-  hooks.findDouyinBodyEditor = async () => ({});
-  hooks.pasteIntoEditable = async () => false;
-  hooks.verifyDouyinBody = async () => false;
-  hooks.tryFillWithRetry = async () => {
-    fallbackCalls += 1;
-    return true;
-  };
+  hooks.tryFillDouyinIntro = async () => false;
+  hooks.tryFillDouyinTopics = async () => true;
 
   const filled = await (hooks.tryFillBody as (page: unknown, platform: string, post: PlatformPost, timeoutMs: number) => Promise<boolean>)(
     page,
@@ -157,8 +138,7 @@ test("douyin body fill falls back to generic fill when direct editor paste fails
     10_000
   );
 
-  assert.equal(filled, true);
-  assert.equal(fallbackCalls, 1);
+  assert.equal(filled, false);
 });
 
 test("douyin AI declaration confirms the modal after selecting the AI generated option", async () => {

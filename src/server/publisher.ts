@@ -378,8 +378,30 @@ export class Publisher {
     const tags = post.hashtags.map((tag) => `#${tag.replace(/^#/, "")}`).join(" ");
     const body = [post.body.trim(), tags].filter(Boolean).join(platform === "douyin" ? " " : "\n");
     if (!body.trim()) return false;
-    if (platform === "douyin") return this.tryFillDouyinBody(page, body, timeoutMs);
+    if (platform === "douyin") return this.tryFillDouyinBodyAndTopics(page, post, timeoutMs);
     return this.tryFillWithRetry(page, FIELD_SELECTORS[platform].body, body, "body", timeoutMs);
+  }
+
+  private async tryFillDouyinBodyAndTopics(page: Page, post: PlatformPost, timeoutMs: number) {
+    const body = post.body.trim();
+    const bodyFilled = body ? await this.tryFillDouyinIntro(page, body, timeoutMs) : true;
+    const topicsFilled = post.hashtags.length ? await this.tryFillDouyinTopics(page, post.hashtags, timeoutMs) : true;
+    return bodyFilled && topicsFilled;
+  }
+
+  private async tryFillDouyinIntro(page: Page, body: string, timeoutMs: number) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const editor = await this.findDouyinBodyEditor(page, body);
+      if (editor) {
+        if (await this.fillDouyinIntroEditor(page, editor, body, 1500)) return true;
+      }
+      await this.clickDouyinIntroPlaceholder(page);
+      const focused = page.locator('[contenteditable="true"]:focus, textarea:focus').first();
+      if ((await focused.count().catch(() => 0)) > 0 && (await this.fillDouyinIntroEditor(page, focused, body, 1500))) return true;
+      await page.waitForTimeout(400);
+    }
+    return this.verifyDouyinIntro(page, body);
   }
 
   private async tryFillDouyinBody(page: Page, body: string, timeoutMs: number) {
@@ -395,6 +417,41 @@ export class Publisher {
     }
     if (await this.verifyDouyinBody(page, body)) return true;
     return this.tryFillWithRetry(page, FIELD_SELECTORS.douyin.body, body, "body", Math.min(timeoutMs, 6_000));
+  }
+
+  private async tryFillDouyinTopics(page: Page, hashtags: string[], timeoutMs: number) {
+    const deadline = Date.now() + timeoutMs;
+    for (const rawTag of hashtags.slice(0, 10)) {
+      const tag = rawTag.replace(/^#/, "").trim();
+      if (!tag) continue;
+      if (await this.hasDouyinTopic(page, tag)) continue;
+
+      let added = false;
+      while (!added && Date.now() < deadline) {
+        const input = (await this.findDouyinTopicInput(page)) || ((await this.openDouyinTopicInput(page)) ? await this.findDouyinTopicInput(page) : null);
+        if (!input) {
+          await page.waitForTimeout(400);
+          continue;
+        }
+        await input.click({ timeout: 1000 }).catch(() => undefined);
+        await page.keyboard.press("Control+A").catch(() => undefined);
+        await page.keyboard.press("Backspace").catch(() => undefined);
+        await page.keyboard.insertText(tag);
+        await page.waitForTimeout(250);
+        await page.keyboard.press("Enter").catch(() => undefined);
+        await page.waitForTimeout(600);
+        if (!(await this.hasDouyinTopic(page, tag))) {
+          const option = page.getByText(new RegExp(escapeRegExp(tag))).first();
+          if (await option.isVisible({ timeout: 800 }).catch(() => false)) {
+            await option.click({ timeout: 1000 }).catch(() => undefined);
+            await page.waitForTimeout(500);
+          }
+        }
+        added = await this.hasDouyinTopic(page, tag);
+      }
+      if (!added) return false;
+    }
+    return true;
   }
 
   private async tryFillTags(page: Page, platform: Platform, hashtags: string[]) {
@@ -2286,8 +2343,8 @@ export class Publisher {
   }
 
   private async ensureDouyinBody(page: Page, post: PlatformPost) {
-    const tags = post.hashtags.map((tag) => `#${tag.replace(/^#/, "")}`).join(" ");
-    const expected = [post.body.trim(), tags].filter(Boolean).join(" ");
+    const expected = post.body.trim();
+    if (!expected && post.hashtags.length) return this.tryFillDouyinTopics(page, post.hashtags, 10_000);
     const editor = await this.findDouyinBodyEditor(page, expected);
     if (!editor) {
       console.log("[publisher:douyin-body]", { matches: false, reason: "editor not found" });
@@ -2302,12 +2359,14 @@ export class Publisher {
 
     let actual = await read();
     if (actual !== normalizeEditorText(expected)) {
-      await this.pasteIntoEditable(page, editor, expected, 1200);
+      await this.fillDouyinIntroEditor(page, editor, expected, 1500);
       await page.waitForTimeout(250);
       actual = await read();
     }
 
-    const matches = actual === normalizeEditorText(expected);
+    const bodyMatches = actual === normalizeEditorText(expected);
+    const topicsMatch = post.hashtags.length ? await this.tryFillDouyinTopics(page, post.hashtags, 10_000) : true;
+    const matches = bodyMatches && topicsMatch;
     console.log("[publisher:douyin-body]", {
       expectedLength: normalizeEditorText(expected).length,
       actualLength: actual.length,
@@ -2317,6 +2376,10 @@ export class Publisher {
   }
 
   private async verifyDouyinBody(page: Page, expected: string) {
+    return this.verifyDouyinIntro(page, expected);
+  }
+
+  private async verifyDouyinIntro(page: Page, expected: string) {
     const editor = await this.findDouyinBodyEditor(page, expected);
     if (!editor) return false;
     const actual = await editor
@@ -2324,6 +2387,52 @@ export class Publisher {
       .then(normalizeEditorText)
       .catch(() => "");
     return this.editorTextMatchesExpected(actual, expected);
+  }
+
+  private async clickDouyinIntroPlaceholder(page: Page) {
+    if (typeof page.getByText !== "function") return false;
+    const placeholder = page.getByText(WORD.workIntro, { exact: false }).first();
+    if (!(await placeholder.isVisible({ timeout: 500 }).catch(() => false))) return false;
+    await placeholder.scrollIntoViewIfNeeded({ timeout: 500 }).catch(() => undefined);
+    const box = await placeholder.boundingBox({ timeout: 500 }).catch(() => null);
+    if (!box) return false;
+    await page.mouse.click(box.x + Math.min(24, Math.max(4, box.width / 2)), box.y + box.height / 2).catch(() => undefined);
+    await page.waitForTimeout(250);
+    return true;
+  }
+
+  private async fillDouyinIntroEditor(page: Page, locator: Locator, value: string, actionTimeoutMs: number) {
+    try {
+      await locator.scrollIntoViewIfNeeded({ timeout: actionTimeoutMs }).catch(() => undefined);
+      await locator.click({ timeout: actionTimeoutMs });
+      await page.keyboard.press("Control+A").catch(() => undefined);
+      await page.keyboard.press("Backspace").catch(() => undefined);
+      await page.keyboard.insertText(value);
+      await locator.evaluate((element) => {
+        element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+        element.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await page.waitForTimeout(200);
+      if (await this.verifyDouyinIntro(page, value)) return true;
+    } catch {
+      // Fall through to direct DOM assignment when the editor swallows keyboard input.
+    }
+
+    try {
+      await locator.evaluate((element, text) => {
+        if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+          element.value = text;
+        } else {
+          element.replaceChildren(document.createTextNode(text));
+        }
+        element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+        element.dispatchEvent(new Event("change", { bubbles: true }));
+      }, value);
+      await page.waitForTimeout(200);
+      return this.verifyDouyinIntro(page, value);
+    } catch {
+      return false;
+    }
   }
 
   private async pasteIntoEditable(page: Page, locator: Locator, value: string, actionTimeoutMs: number) {
@@ -2362,7 +2471,7 @@ export class Publisher {
     const strict = await this.findVisibleLocator(page, FIELD_SELECTORS.douyin.body);
     if (strict) return strict;
 
-    const candidates = page.locator('[contenteditable="true"], textarea');
+    const candidates = page.locator('[contenteditable="true"], textarea, [role="textbox"]');
     const count = await candidates.count().catch(() => 0);
     const expectedSnippet = normalizeEditorText(expected).slice(0, 12);
     const summaries: Array<{ index: number; score: number; width: number; height: number; text: string; meta: string }> = [];
@@ -2372,9 +2481,10 @@ export class Publisher {
       if (!(await candidate.isVisible().catch(() => false))) continue;
       const box = await candidate.boundingBox({ timeout: 300 }).catch(() => null);
       if (!box || box.width < 200 || box.height < 40) continue;
-      const text = normalizeEditorText(
-        await candidate.evaluate((element) => (element as HTMLElement).innerText || element.textContent || "", { timeout: 300 }).catch(() => "")
-      );
+      const text = normalizeEditorText(await candidate.evaluate((element) => {
+        if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) return element.value;
+        return (element as HTMLElement).innerText || element.textContent || "";
+      }, { timeout: 300 }).catch(() => ""));
       const meta = await candidate
         .evaluate((element) => {
           let ancestorText = "";
@@ -2411,6 +2521,89 @@ export class Publisher {
     if (best) return best.locator;
     console.log("[publisher:douyin-body-candidates]", summaries);
     return null;
+  }
+
+  private async findDouyinTopicInput(page: Page) {
+    for (const selector of [
+      'input:focus:not([type="file"]):not([type="hidden"])',
+      `input[placeholder*="${WORD.topic}"]`,
+      `input[placeholder*="${WORD.tag}"]`,
+      'input[placeholder*="\u8f93\u5165\u8bdd\u9898"]'
+    ]) {
+      const input = page.locator(selector).first();
+      if (await input.isVisible({ timeout: 300 }).catch(() => false)) return input;
+    }
+
+    const labelBox = await this.findSmallestVisibleTextBox(page, "#\u6dfb\u52a0\u8bdd\u9898");
+    const inputs = page.locator('input:not([type="file"]):not([type="hidden"]), textarea');
+    const count = await inputs.count().catch(() => 0);
+    const candidates: Array<{ locator: Locator; score: number }> = [];
+    for (let index = 0; index < Math.min(count, 30); index += 1) {
+      const input = inputs.nth(index);
+      if (!(await input.isVisible().catch(() => false))) continue;
+      const box = await input.boundingBox({ timeout: 300 }).catch(() => null);
+      if (!box) continue;
+      if (!labelBox) continue;
+      const yDistance = Math.abs(box.y + box.height / 2 - (labelBox.y + labelBox.height / 2));
+      if (yDistance > 40) continue;
+      const meta = [
+        await input.getAttribute("placeholder").catch(() => ""),
+        await input.getAttribute("aria-label").catch(() => ""),
+        await input.evaluate((element) => element.parentElement?.textContent || "").catch(() => "")
+      ].join(" ");
+      const normalizedMeta = meta.replace(/\s+/g, "");
+      const topicScore = /\u8bdd\u9898|\u6807\u7b7e|topic|tag/i.test(normalizedMeta) ? 100_000 : 0;
+      const rowScore = Math.max(0, 40_000 - yDistance * 1000);
+      const notTitlePenalty = /\u6807\u9898|title/i.test(normalizedMeta) ? 100_000 : 0;
+      const score = topicScore + rowScore - notTitlePenalty;
+      if (score > 0) candidates.push({ locator: input, score });
+    }
+    return candidates.sort((left, right) => right.score - left.score)[0]?.locator || null;
+  }
+
+  private async openDouyinTopicInput(page: Page) {
+    const addTopic = page.getByText("#\u6dfb\u52a0\u8bdd\u9898", { exact: true });
+    const count = await addTopic.count().catch(() => 0);
+    for (let index = 0; index < Math.min(count, 8); index += 1) {
+      const target = addTopic.nth(index);
+      if (!(await target.isVisible().catch(() => false))) continue;
+      await target.click({ timeout: 1000 }).catch(async () => {
+        const box = await target.boundingBox({ timeout: 300 }).catch(() => null);
+        if (box) await page.mouse.click(box.x + Math.min(24, box.width / 2), box.y + box.height / 2).catch(() => undefined);
+      });
+      await page.waitForTimeout(400);
+      return true;
+    }
+    for (const label of ["#\u6dfb\u52a0\u8bdd\u9898", WORD.topic, WORD.tag]) {
+      if (await this.clickVisibleText(page, label, 800)) {
+        await page.waitForTimeout(400);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private async hasDouyinTopic(page: Page, tag: string) {
+    const normalized = tag.replace(/^#/, "").trim();
+    if (!normalized) return true;
+    return page
+      .locator("span,button,div,a")
+      .evaluateAll((elements, target) => {
+        const exact = `#${target}`;
+        return elements.some((element) => {
+          const text = (element.textContent || "").replace(/\s+/g, "");
+          if (text !== exact && text !== target) return false;
+          const className = element.getAttribute("class") || "";
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          const visible =
+            !!rect.width && !!rect.height && style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || "1") > 0.01;
+          if (!visible && !/topic|tag|chip/i.test(className)) return false;
+          if (element.closest('[class*="recommend"],[class*="suggest"],[class*="hot"]')) return false;
+          return true;
+        });
+      }, normalized)
+      .catch(() => false);
   }
 
   private async clickFormBlankArea(page: Page, platform: Platform) {
@@ -2547,4 +2740,8 @@ function normalizeEditorText(value: string) {
     .join("\n")
     .replace(/\n{2,}/g, "\n")
     .trim();
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
