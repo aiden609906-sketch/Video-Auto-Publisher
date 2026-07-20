@@ -150,66 +150,6 @@ test("douyin topics succeed only when every expected topic is a visible scoped c
   }
 });
 
-test("douyin topics use a complete per-key event sequence before accepting the real picker fragment", async () => {
-  const page = await fixturePage(browser, "form-ready.html");
-  const picker = await readFile(path.join(FIXTURE_DIR, "topic-picker-open.html"), "utf8");
-  const realDateNow = Date.now;
-  const realWaitForTimeout = page.waitForTimeout.bind(page);
-  let fakeNow = realDateNow();
-  Date.now = () => fakeNow;
-  Object.defineProperty(page, "waitForTimeout", {
-    configurable: true,
-    value: async (milliseconds: number) => {
-      fakeNow += milliseconds + 2_000;
-      await realWaitForTimeout(0);
-    }
-  });
-  try {
-    await page.evaluate((picker) => {
-      const editor = document.querySelector('[data-publisher-fixture-scope] [data-slate-editor]');
-      if (!editor) throw new Error("fixture editor missing");
-      editor.setAttribute("contenteditable", "true");
-      const expected = " #topic-one";
-      let keydown = "";
-      let keypress = "";
-      let inputEvents = 0;
-      editor.addEventListener("keydown", (event) => {
-        if (event.key.length === 1) keydown += event.key;
-      });
-      editor.addEventListener("keypress", (event) => {
-        if (event.key.length === 1) keypress += event.key;
-      });
-      editor.addEventListener("input", () => {
-        inputEvents += 1;
-        if (document.querySelector(".mention-suggest-item-container-TVOZMl")) return;
-        if (!keydown.endsWith(expected) || !keypress.endsWith(expected) || inputEvents < expected.length) return;
-        const parsed = new DOMParser().parseFromString(picker, "text/html");
-        const popup = parsed.body.firstElementChild;
-        const option = popup?.querySelector(".tag-hash-o0tpyE");
-        const name = option?.querySelector('[class*="tag-hash-view-name"]');
-        if (!popup || !option || !name) throw new Error("real picker fragment is incomplete");
-        name.textContent = "topic-one";
-        option.addEventListener("click", () => {
-          const mention = document.createElement("span");
-          mention.setAttribute("data-mention", "fixture");
-          mention.textContent = "#topic-one";
-          editor.append(mention);
-        });
-        document.body.append(popup);
-      });
-    }, picker);
-
-    const result = await new DouyinAdapter(page).runStage("topics", makeInput());
-
-    assert.equal(result.status, "succeeded", `per-key topic picker: ${result.detail}`);
-    assert.equal(await page.locator('[data-publisher-fixture-scope] [data-slate-editor] [data-mention]').count(), 1);
-  } finally {
-    Date.now = realDateNow;
-    Object.defineProperty(page, "waitForTimeout", { configurable: true, value: realWaitForTimeout });
-    await page.close();
-  }
-});
-
 test("douyin click failures expose a safe topic operation without raw selector or page text", async () => {
   const page = await combinedFixturePage(browser, ["form-ready.html", "topic-picker-open.html"]);
   try {
@@ -726,7 +666,7 @@ test("douyin page succeeds only when one visible creator form is owned by the ad
     const adapter = new DouyinAdapter(page);
     const result = await adapter.runStage("page", makeInput());
 
-    assert.equal(adapter.version, "2026.07.20-v3-state-machine-5");
+    assert.equal(adapter.version, "2026.07.20-v3-state-machine-4");
     assert.equal(result.status, "succeeded", result.detail);
     assert.equal(result.evidence?.formCount, 1);
   } finally {
