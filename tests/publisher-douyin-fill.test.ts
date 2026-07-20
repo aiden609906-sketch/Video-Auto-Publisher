@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
 import { Publisher, type PublisherDependencies } from "../src/server/publisher.js";
@@ -25,8 +26,26 @@ test("Publisher.open delegates Douyin to the V3 workflow and derives legacy comp
   const browser = await chromium.launch({ channel: "msedge", headless: true });
   const context = await browser.newContext();
   const fixture = await readFile(path.resolve("tests/fixtures/publisher/douyin/ready-before-publish.html"), "utf8");
+  await context.addInitScript((readyFixture) => {
+    document.addEventListener("change", (event) => {
+      const input = event.target;
+      if (!(input instanceof HTMLInputElement) || input.type !== "file") return;
+      setTimeout(() => {
+        document.body.innerHTML = readyFixture;
+        document.querySelector(".wrapper-MLZdnB .selectText-XSrMFZ")?.setAttribute("aria-checked", "true");
+        document.querySelector(".content-confirm-container-Wp91G7 button.primary-cECiOJ")?.addEventListener(
+          "click",
+          () => document.documentElement.setAttribute("data-publish-clicked", "true")
+        );
+      }, 100);
+    });
+  }, fixture);
   await context.route("https://creator.douyin.com/**", (route) =>
-    route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: fixture })
+    route.fulfill({
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      body: '<div class="semi-upload" style="padding:10px"><input type="file" accept="video/mp4"></div>'
+    })
   );
   const dependencies: PublisherDependencies = {
     copy: async () => undefined,
@@ -35,12 +54,15 @@ test("Publisher.open delegates Douyin to the V3 workflow and derives legacy comp
   const publisher = new Publisher("profiles", true, dependencies);
   const post = makeDouyinPost();
   post.hashtags = [];
+  const tempDir = await mkdtemp(path.join(tmpdir(), "publisher-video-"));
+  const videoPath = path.join(tempDir, "video.mp4");
+  await writeFile(videoPath, "safe-video-fixture");
 
   try {
     const result = await publisher.open(
       "douyin",
       "default-douyin",
-      "video.mp4",
+      videoPath,
       post,
       { landscape: null, portrait: null }
     );
@@ -60,9 +82,11 @@ test("Publisher.open delegates Douyin to the V3 workflow and derives legacy comp
     assert.equal(result.titlePrefilled, true);
     assert.equal(result.bodyPrefilled, true);
     assert.equal(result.declarationPrefilled, true);
+    assert.equal(await context.pages()[0].locator("html").getAttribute("data-publish-clicked"), null);
   } finally {
     await context.close();
     await browser.close();
+    await rm(tempDir, { recursive: true });
   }
 });
 

@@ -1,6 +1,6 @@
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat as fileStat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
@@ -8,6 +8,7 @@ import { DouyinAdapter } from "../src/server/publish/adapters/douyin.js";
 import type { PublishInput } from "../src/server/publish/platform-adapter.js";
 
 const FIXTURE_DIR = path.resolve("tests/fixtures/publisher/douyin");
+const DOUYIN_UPLOAD_URL = "https://creator.douyin.com/creator-micro/content/upload";
 let browser: Browser;
 
 before(async () => {
@@ -41,15 +42,18 @@ function makeInput(overrides: Partial<PublishInput> = {}): PublishInput {
 }
 
 async function fixturePage(browser: Browser, name: string): Promise<Page> {
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-  await page.setContent(await readFile(path.join(FIXTURE_DIR, name), "utf8"));
-  return page;
+  return htmlPage(browser, await readFile(path.join(FIXTURE_DIR, name), "utf8"));
 }
 
 async function combinedFixturePage(browser: Browser, names: string[]): Promise<Page> {
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const fragments = await Promise.all(names.map((name) => readFile(path.join(FIXTURE_DIR, name), "utf8")));
-  await page.setContent(fragments.join("\n"));
+  return htmlPage(browser, fragments.join("\n"));
+}
+
+async function htmlPage(browser: Browser, html: string, url = DOUYIN_UPLOAD_URL): Promise<Page> {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  await page.route(url, (route) => route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: html }));
+  await page.goto(url);
   return page;
 }
 
@@ -83,6 +87,19 @@ test("douyin body fails with bounded safe evidence when the scoped editor does n
   } finally {
     await page.close();
   }
+});
+
+test("douyin read failures expose only a whitelisted operation, selector alias, and category", async () => {
+  const page = await fixturePage(browser, "form-ready.html");
+  await page.close();
+
+  const result = await new DouyinAdapter(page).runStage("title", makeInput());
+
+  assert.equal(result.status, "failed");
+  assert.match(result.detail, /operation=title-read/);
+  assert.match(result.detail, /target=title-input/);
+  assert.match(result.detail, /category=detached/);
+  assert.doesNotMatch(result.detail, /form-container|editor-kit|normalized title|default-douyin/i);
 });
 
 test("douyin title succeeds only when the scoped title input contains the expected value", async () => {
@@ -128,6 +145,58 @@ test("douyin topics succeed only when every expected topic is a visible scoped c
       await page.locator('[data-publisher-fixture-scope] [data-slate-editor] [data-mention]').innerText(),
       "#topic-one"
     );
+  } finally {
+    await page.close();
+  }
+});
+
+test("douyin click failures expose a safe topic operation without raw selector or page text", async () => {
+  const page = await combinedFixturePage(browser, ["form-ready.html", "topic-picker-open.html"]);
+  try {
+    await page.evaluate(() => {
+      const option = document.querySelector('[class*="mention-suggest-item-container"] [class*="tag-hash-"]');
+      const name = option?.querySelector('[class*="tag-hash-view-name"]');
+      if (!option || !name) throw new Error("topic fixture option missing");
+      name.textContent = "topic-one";
+    });
+    const originalLocator = page.locator.bind(page);
+    Object.defineProperty(page, "locator", {
+      configurable: true,
+      value: (selector: string) => {
+        const locator = originalLocator(selector);
+        if (selector !== '.mention-suggest-item-container-TVOZMl .tag-hash-o0tpyE') return locator;
+        return new Proxy(locator, {
+          get(target, property) {
+            if (property !== "nth") {
+              const value = Reflect.get(target, property);
+              return typeof value === "function" ? value.bind(target) : value;
+            }
+            return (index: number) => {
+              const item = target.nth(index);
+              return new Proxy(item, {
+                get(itemTarget, itemProperty) {
+                  if (itemProperty === "click") {
+                    return async () => {
+                      throw new Error("strict mode raw selector topic-one private text");
+                    };
+                  }
+                  const value = Reflect.get(itemTarget, itemProperty);
+                  return typeof value === "function" ? value.bind(itemTarget) : value;
+                }
+              });
+            };
+          }
+        });
+      }
+    });
+
+    const result = await new DouyinAdapter(page).runStage("topics", makeInput());
+
+    assert.equal(result.status, "failed");
+    assert.match(result.detail, /operation=topic-click/);
+    assert.match(result.detail, /target=topic-suggestion/);
+    assert.match(result.detail, /category=(?:strict|timeout|detached)/);
+    assert.doesNotMatch(result.detail, /mention-suggest|tag-hash|topic-one|default-douyin/i);
   } finally {
     await page.close();
   }
@@ -210,6 +279,99 @@ test("douyin cover succeeds only after the applied signature changes and the edi
   }
 });
 
+test("douyin cover detects in-place image content changes without replacing DOM nodes", async () => {
+  const page = await combinedFixturePage(browser, ["form-ready.html", "cover-editor-open.html"]);
+  const tempDir = await mkdtemp(path.join(tmpdir(), "publisher-cover-"));
+  const coverPath = path.join(tempDir, "cover.png");
+  await writeFile(coverPath, "fixture");
+  try {
+    await page.evaluate(() => {
+      const editor = document.querySelector('[data-publisher-fixture-scope].dy-creator-content-modal-content');
+      const upload = editor?.querySelector('input.semi-upload-hidden-input') as HTMLInputElement | null;
+      const canvas = editor?.querySelector("canvas") as HTMLCanvasElement | null;
+      const complete = editor?.querySelector('.buttons-BoCvr4 button.secondary-zU1YLr[type="button"]');
+      const mainBackground = document.querySelector(
+        ".form-container-MDtobK .content-upload-new .background-i_il_l"
+      ) as HTMLElement | null;
+      if (!editor || !upload || !canvas || !complete || !mainBackground) {
+        throw new Error("cover fixture controls missing");
+      }
+      mainBackground.style.backgroundImage = "linear-gradient(rgb(1, 1, 1), rgb(2, 2, 2))";
+      upload.addEventListener("change", () => {
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("cover fixture canvas unavailable");
+        context.fillStyle = "rgb(7, 11, 13)";
+        context.fillRect(0, 0, 1, 1);
+      });
+      complete.addEventListener("click", () => {
+        mainBackground.style.backgroundImage = "linear-gradient(rgb(3, 3, 3), rgb(4, 4, 4))";
+        editor.remove();
+      });
+    });
+    const input = makeInput();
+    input.covers.landscape = coverPath;
+
+    const result = await new DouyinAdapter(page).runStage("cover", input);
+
+    assert.equal(result.status, "succeeded", result.detail);
+    assert.equal(await page.locator('[data-publisher-fixture-scope].dy-creator-content-modal-content').count(), 0);
+  } finally {
+    await page.close();
+    await rm(tempDir, { recursive: true });
+  }
+});
+
+test("douyin cover does not treat file input metadata as applied visual content", async () => {
+  const page = await combinedFixturePage(browser, ["form-ready.html", "cover-editor-open.html"]);
+  const tempDir = await mkdtemp(path.join(tmpdir(), "publisher-cover-"));
+  const coverPath = path.join(tempDir, "cover.png");
+  await writeFile(coverPath, "fixture");
+  try {
+    await page.locator('.buttons-BoCvr4 button.secondary-zU1YLr[type="button"]').evaluate((complete) => {
+      complete.addEventListener("click", () => document.documentElement.setAttribute("data-complete-clicked", "true"));
+    });
+
+    const result = await new DouyinAdapter(page).runStage(
+      "cover",
+      makeInput({ covers: { landscape: coverPath, portrait: null } })
+    );
+
+    assert.equal(result.status, "failed");
+    assert.equal(await page.locator("html").getAttribute("data-complete-clicked"), null);
+  } finally {
+    await page.close();
+    await rm(tempDir, { recursive: true });
+  }
+});
+
+test("douyin cover canvas read failure is safely categorized without leaking page text", async () => {
+  const page = await combinedFixturePage(browser, ["form-ready.html", "cover-editor-open.html"]);
+  const tempDir = await mkdtemp(path.join(tmpdir(), "publisher-cover-"));
+  const coverPath = path.join(tempDir, "private-cover.png");
+  await writeFile(coverPath, "fixture");
+  try {
+    await page.evaluate(`(() => {
+      const canvas = document.querySelector('[data-publisher-fixture-scope].dy-creator-content-modal-content canvas');
+      if (!canvas) throw new Error('cover fixture canvas missing');
+      Object.defineProperty(canvas, 'getContext', {
+        value: function () { throw new Error('private account and content'); }
+      });
+    })()`);
+    const input = makeInput({ covers: { landscape: coverPath, portrait: null } });
+
+    const result = await new DouyinAdapter(page).runStage("cover", input);
+
+    assert.equal(result.status, "failed");
+    assert.match(result.detail, /operation=cover-read-signature/);
+    assert.match(result.detail, /target=cover-editor/);
+    assert.match(result.detail, /category=evaluate/);
+    assert.doesNotMatch(result.detail, /private-cover|private account|content-upload-new|\.png/i);
+  } finally {
+    await page.close();
+    await rm(tempDir, { recursive: true });
+  }
+});
+
 test("douyin declaration succeeds only after the AI radio is checked and its modal closes", async () => {
   const page = await combinedFixturePage(browser, ["form-ready.html", "declaration-modal-open.html"]);
   try {
@@ -245,6 +407,7 @@ test("douyin declaration succeeds only after the AI radio is checked and its mod
               '[data-publisher-fixture-scope].form-container-MDtobK .wrapper-MLZdnB .selectText-XSrMFZ'
             );
             if (!readyValue || !currentValue) throw new Error("declaration row fixture missing");
+            readyValue.setAttribute("aria-checked", "true");
             currentValue.replaceWith(readyValue);
             selected.remove();
           });
@@ -257,6 +420,33 @@ test("douyin declaration succeeds only after the AI radio is checked and its mod
 
     assert.equal(result.status, "succeeded", result.detail);
     assert.equal(await page.locator('[data-publisher-fixture-scope].semi-modal').count(), 0);
+  } finally {
+    await page.close();
+  }
+});
+
+test("douyin declaration fails when confirmation leaves the actual modal shell connected", async () => {
+  const page = await combinedFixturePage(browser, ["form-ready.html", "declaration-selected.html"]);
+  try {
+    await page.evaluate(() => {
+      const modal = document.querySelector('[data-publisher-fixture-scope].semi-modal');
+      const confirm = Array.from(modal?.querySelectorAll("button") || []).find(
+        (button) => button.textContent?.trim() === "确定"
+      );
+      const row = document.querySelector(".form-container-MDtobK .wrapper-MLZdnB .selectText-XSrMFZ");
+      if (!modal || !confirm || !row) throw new Error("declaration fixture controls missing");
+      confirm.addEventListener("click", () => {
+        modal.querySelector(".btnWrapper-LtGF4z")?.remove();
+        row.textContent = "内容由AI生成";
+        row.classList.add("selected-Vx6wO5");
+        row.setAttribute("aria-checked", "true");
+      });
+    });
+
+    const result = await new DouyinAdapter(page).runStage("declaration", makeInput());
+
+    assert.equal(result.status, "failed");
+    assert.equal(await page.locator('[data-publisher-fixture-scope].semi-modal').count(), 1);
   } finally {
     await page.close();
   }
@@ -287,7 +477,7 @@ test("douyin declaration does not run behind an open cover dialog", async () => 
   }
 });
 
-test("douyin declaration reuses an already selected scoped AI value without clicking", async () => {
+test("douyin declaration rejects selected text and class without checked or ARIA state", async () => {
   const page = await fixturePage(browser, "ready-before-publish.html");
   try {
     await page.evaluate(() => {
@@ -300,8 +490,50 @@ test("douyin declaration reuses an already selected scoped AI value without clic
 
     const result = await new DouyinAdapter(page).runStage("declaration", makeInput());
 
+    assert.equal(result.status, "failed");
+    assert.equal(await page.locator('[data-test="declaration-clicked"]').count(), 1);
+    assert.doesNotMatch(result.detail, /aiValueSelected=true/);
+  } finally {
+    await page.close();
+  }
+});
+
+test("douyin declaration reuses an already checked scoped AI row without clicking", async () => {
+  const page = await fixturePage(browser, "ready-before-publish.html");
+  try {
+    await page.evaluate(() => {
+      const value = document.querySelector(
+        '[data-publisher-fixture-scope].form-container-MDtobK .wrapper-MLZdnB .selectText-XSrMFZ'
+      );
+      const control = document.querySelector(
+        '[data-publisher-fixture-scope].form-container-MDtobK .wrapper-MLZdnB .selectBox-buZRzi'
+      );
+      if (!value || !control) throw new Error("declaration fixture row missing");
+      value.setAttribute("aria-checked", "true");
+      control.addEventListener("click", () => control.setAttribute("data-test", "declaration-clicked"));
+    });
+
+    const result = await new DouyinAdapter(page).runStage("declaration", makeInput());
+
     assert.equal(result.status, "succeeded", result.detail);
+    assert.equal(result.evidence?.declarationModalCount, 0);
     assert.equal(await page.locator('[data-test="declaration-clicked"]').count(), 0);
+  } finally {
+    await page.close();
+  }
+});
+
+test("douyin declaration requires the cover dialog to be absent, not merely hidden", async () => {
+  const page = await combinedFixturePage(browser, ["ready-before-publish.html", "cover-editor-open.html"]);
+  try {
+    await page.locator('[data-publisher-fixture-scope].dy-creator-content-modal-content').evaluate((dialog: HTMLElement) => {
+      dialog.style.display = "none";
+    });
+
+    const result = await new DouyinAdapter(page).runStage("declaration", makeInput());
+
+    assert.equal(result.status, "failed");
+    assert.match(result.detail, /cover dialog/i);
   } finally {
     await page.close();
   }
@@ -342,6 +574,88 @@ test("douyin selectors scope to the creator form without relying on sanitizer-on
   }
 });
 
+test("douyin page rejects a non-creator origin even when a video input exists", async () => {
+  const page = await htmlPage(
+    browser,
+    '<div class="semi-upload"><input type="file" accept="video/mp4"></div>',
+    "https://example.test/creator-micro/content/upload"
+  );
+  try {
+    const result = await new DouyinAdapter(page).runStage("page", makeInput());
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.evidence?.approvedPage, false);
+  } finally {
+    await page.close();
+  }
+});
+
+test("douyin page rejects a lookalike creator upload path", async () => {
+  const page = await htmlPage(
+    browser,
+    '<div class="semi-upload" style="padding:10px"><input type="file" accept="video/mp4"></div>',
+    "https://creator.douyin.com/creator-micro/content/upload-evil"
+  );
+  try {
+    const result = await new DouyinAdapter(page).runStage("page", makeInput());
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.evidence?.approvedPage, false);
+  } finally {
+    await page.close();
+  }
+});
+
+test("douyin page reports login required when navigation changes during polling", async () => {
+  const page = await fixturePage(browser, "form-ready.html");
+  try {
+    await page.locator(".form-container-MDtobK").evaluate((form: HTMLElement) => {
+      form.style.display = "none";
+      setTimeout(() => history.replaceState({}, "", "/login"), 100);
+      setTimeout(() => form.style.removeProperty("display"), 400);
+    });
+
+    const result = await new DouyinAdapter(page).runStage("page", makeInput());
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.evidence?.loginRequired, true);
+  } finally {
+    await page.close();
+  }
+});
+
+test("douyin page does not accept a hidden global video input as the upload page", async () => {
+  const page = await htmlPage(browser, '<input type="file" accept="video/mp4" style="display:none">');
+  try {
+    await page.evaluate(() => setTimeout(() => history.replaceState({}, "", "/login"), 300));
+
+    const result = await new DouyinAdapter(page).runStage("page", makeInput());
+
+    assert.equal(result.status, "failed");
+  } finally {
+    await page.close();
+  }
+});
+
+test("douyin page does not accept multiple upload roots as proof of ownership", async () => {
+  const page = await htmlPage(
+    browser,
+    '<div class="semi-upload"><input type="file" accept="video/mp4"></div><div class="semi-upload"><input type="file" accept="video/mp4"></div><div class="form-container-MDtobK" style="display:none;padding:10px">ready</div>'
+  );
+  try {
+    await page.evaluate(() => {
+      setTimeout(() => history.replaceState({}, "", "/login"), 100);
+      setTimeout(() => (document.querySelector<HTMLElement>(".form-container-MDtobK")!.style.display = "block"), 400);
+    });
+
+    const result = await new DouyinAdapter(page).runStage("page", makeInput());
+
+    assert.equal(result.status, "failed");
+  } finally {
+    await page.close();
+  }
+});
+
 test("douyin page succeeds only when one visible creator form is owned by the adapter", async () => {
   const page = await fixturePage(browser, "form-ready.html");
   try {
@@ -360,13 +674,242 @@ test("douyin page succeeds only when one visible creator form is owned by the ad
   }
 });
 
-test("douyin video succeeds only after the creator form proves the upload is ready", async () => {
+test("douyin video fails closed when an existing creator form cannot prove the current video", async () => {
   const page = await fixturePage(browser, "form-ready.html");
   try {
     const result = await new DouyinAdapter(page).runStage("video", makeInput());
 
+    assert.equal(result.status, "failed");
+    assert.equal(result.evidence?.uploadSubmitted, false);
+  } finally {
+    await page.close();
+  }
+});
+
+test("douyin video submits the scoped input and verifies a safe file digest before stable form readiness", async () => {
+  const page = await htmlPage(
+    browser,
+    '<div class="semi-upload" style="padding:10px"><input type="file" accept="video/mp4"></div>'
+  );
+  const tempDir = await mkdtemp(path.join(tmpdir(), "publisher-video-"));
+  const videoPath = path.join(tempDir, "private-video-name.mp4");
+  await writeFile(videoPath, "safe-video-fixture");
+  try {
+    const formReady = await readFile(path.join(FIXTURE_DIR, "form-ready.html"), "utf8");
+    await page.evaluate((formReady) => {
+      const root = document.querySelector(".semi-upload");
+      const upload = root?.querySelector('input[type="file"]') as HTMLInputElement | null;
+      if (!root || !upload) throw new Error("video fixture controls missing");
+      upload.addEventListener("change", () => {
+        const file = upload.files?.[0];
+        document.documentElement.setAttribute(
+          "data-upload-observed",
+          file && file.size > 0 && file.type === "video/mp4" ? "safe" : "invalid"
+        );
+        setTimeout(() => {
+          const parsed = new DOMParser().parseFromString(formReady, "text/html");
+          const form = parsed.body.firstElementChild;
+          if (!form) throw new Error("form fixture missing");
+          root.replaceWith(form);
+        }, 100);
+      });
+    }, formReady);
+    const input = makeInput({ filePath: videoPath });
+
+    const result = await new DouyinAdapter(page).runStage("video", input);
+
     assert.equal(result.status, "succeeded", result.detail);
-    assert.equal(result.evidence?.formReady, true);
+    assert.equal(await page.locator("html").getAttribute("data-upload-observed"), "safe");
+    assert.match(String(result.evidence?.safeFileDigest), /^[a-f0-9]{64}$/);
+    assert.ok(Number(result.evidence?.stableFormReads) >= 2);
+    assert.ok(Number(result.evidence?.stableFormMs) >= 400);
+    assert.doesNotMatch(JSON.stringify(result), /private-video-name|publisher-video-|\.mp4/i);
+  } finally {
+    await page.close();
+    await rm(tempDir, { recursive: true });
+  }
+});
+
+test("douyin video rejects a transient form even after the scoped input changes", async () => {
+  const page = await htmlPage(
+    browser,
+    '<div class="semi-upload" style="padding:10px"><input type="file" accept="video/mp4"></div>'
+  );
+  const tempDir = await mkdtemp(path.join(tmpdir(), "publisher-video-"));
+  const videoPath = path.join(tempDir, "video.mp4");
+  await writeFile(videoPath, "safe-video-fixture");
+  try {
+    await page.evaluate(() => {
+      const upload = document.querySelector<HTMLInputElement>('.semi-upload > input[type="file"]');
+      if (!upload) throw new Error("video fixture input missing");
+      upload.addEventListener("change", () => {
+        setTimeout(() => {
+          const form = document.createElement("div");
+          form.className = "form-container-MDtobK";
+          form.style.padding = "10px";
+          form.textContent = "ready";
+          document.body.append(form);
+          setTimeout(() => form.remove(), 250);
+          setTimeout(() => history.replaceState({}, "", "/login"), 500);
+        }, 100);
+      });
+    });
+
+    const result = await new DouyinAdapter(page).runStage("video", makeInput({ filePath: videoPath }));
+
+    assert.equal(result.status, "failed");
+    assert.notEqual(result.evidence?.stableFormReads, 2);
+  } finally {
+    await page.close();
+    await rm(tempDir, { recursive: true });
+  }
+});
+
+test("douyin video requires the same creator form node across stable readiness reads", async () => {
+  const page = await htmlPage(
+    browser,
+    '<div class="semi-upload" style="padding:10px"><input type="file" accept="video/mp4"></div>'
+  );
+  const tempDir = await mkdtemp(path.join(tmpdir(), "publisher-video-"));
+  const videoPath = path.join(tempDir, "video.mp4");
+  await writeFile(videoPath, "safe-video-fixture");
+  try {
+    await page.evaluate(() => {
+      const upload = document.querySelector<HTMLInputElement>('.semi-upload > input[type="file"]');
+      if (!upload) throw new Error("video fixture input missing");
+      upload.addEventListener("change", () => {
+        setTimeout(() => {
+          const first = document.createElement("div");
+          first.className = "form-container-MDtobK";
+          first.style.padding = "10px";
+          first.textContent = "ready";
+          document.body.append(first);
+          setTimeout(() => first.replaceWith(first.cloneNode(true)), 150);
+          setTimeout(() => history.replaceState({}, "", "/login"), 500);
+        }, 100);
+      });
+    });
+
+    const result = await new DouyinAdapter(page).runStage("video", makeInput({ filePath: videoPath }));
+
+    assert.equal(result.status, "failed");
+    assert.notEqual(result.evidence?.stableFormReads, 2);
+  } finally {
+    await page.close();
+    await rm(tempDir, { recursive: true });
+  }
+});
+
+test("douyin video file input failures identify a safe operation and IO category", async () => {
+  const page = await htmlPage(
+    browser,
+    '<div class="semi-upload" style="padding:10px"><input type="file" accept="video/mp4"></div>'
+  );
+  try {
+    const input = makeInput({ filePath: "D:\\private-account\\missing-secret-video.mp4" });
+
+    const result = await new DouyinAdapter(page).runStage("video", input);
+
+    assert.equal(result.status, "failed");
+    assert.match(result.detail, /operation=video-set-file/);
+    assert.match(result.detail, /target=video-upload-input/);
+    assert.match(result.detail, /category=io/);
+    assert.doesNotMatch(result.detail, /private-account|missing-secret|\.mp4|default-douyin/i);
+  } finally {
+    await page.close();
+  }
+});
+
+test("douyin video does not reuse a verified form after the source file identity changes", async () => {
+  const page = await htmlPage(
+    browser,
+    '<div class="semi-upload" style="padding:10px"><input type="file" accept="video/mp4"></div>'
+  );
+  const tempDir = await mkdtemp(path.join(tmpdir(), "publisher-video-"));
+  const videoPath = path.join(tempDir, "video.mp4");
+  await writeFile(videoPath, "first-safe-video");
+  try {
+    const formReady = await readFile(path.join(FIXTURE_DIR, "form-ready.html"), "utf8");
+    await page.evaluate((formReady) => {
+      const root = document.querySelector(".semi-upload");
+      const upload = root?.querySelector('input[type="file"]');
+      if (!root || !upload) throw new Error("video fixture controls missing");
+      upload.addEventListener("change", () => setTimeout(() => {
+        const parsed = new DOMParser().parseFromString(formReady, "text/html");
+        const form = parsed.body.firstElementChild;
+        if (!form) throw new Error("form fixture missing");
+        root.replaceWith(form);
+      }, 100));
+    }, formReady);
+    const adapter = new DouyinAdapter(page);
+    const input = makeInput({ filePath: videoPath });
+    const first = await adapter.runStage("video", input);
+    assert.equal(first.status, "succeeded", first.detail);
+    await writeFile(videoPath, "changed-safe-video-with-different-size");
+
+    const second = await adapter.runStage("video", input);
+
+    assert.equal(second.status, "failed");
+    assert.equal(second.evidence?.uploadSubmitted, false);
+  } finally {
+    await page.close();
+    await rm(tempDir, { recursive: true });
+  }
+});
+
+test("douyin video content identity detects a same-size replacement with restored timestamps", async () => {
+  const page = await htmlPage(
+    browser,
+    '<div class="semi-upload" style="padding:10px"><input type="file" accept="video/mp4"></div>'
+  );
+  const tempDir = await mkdtemp(path.join(tmpdir(), "publisher-video-"));
+  const videoPath = path.join(tempDir, "video.mp4");
+  await writeFile(videoPath, "AAAA");
+  try {
+    const fixedTimestamp = new Date("2020-01-02T03:04:05.000Z");
+    await utimes(videoPath, fixedTimestamp, fixedTimestamp);
+    const original = await fileStat(videoPath);
+    const formReady = await readFile(path.join(FIXTURE_DIR, "form-ready.html"), "utf8");
+    await page.evaluate((formReady) => {
+      const root = document.querySelector(".semi-upload");
+      const upload = root?.querySelector('input[type="file"]');
+      if (!root || !upload) throw new Error("video fixture controls missing");
+      upload.addEventListener("change", () => setTimeout(() => {
+        const parsed = new DOMParser().parseFromString(formReady, "text/html");
+        const form = parsed.body.firstElementChild;
+        if (!form) throw new Error("form fixture missing");
+        root.replaceWith(form);
+      }, 100));
+    }, formReady);
+    const adapter = new DouyinAdapter(page);
+    const input = makeInput({ filePath: videoPath });
+    const first = await adapter.runStage("video", input);
+    assert.equal(first.status, "succeeded", first.detail);
+    await writeFile(videoPath, "BBBB");
+    await utimes(videoPath, original.atime, original.mtime);
+
+    const second = await adapter.runStage("video", input);
+
+    assert.equal(second.status, "failed");
+    assert.equal(second.evidence?.uploadSubmitted, false);
+  } finally {
+    await page.close();
+    await rm(tempDir, { recursive: true });
+  }
+});
+
+test("douyin stage result callback failures do not replace or reject the stage result", async () => {
+  const page = await fixturePage(browser, "form-ready.html");
+  try {
+    const adapter = new DouyinAdapter(page, {
+      onStageResult: () => {
+        throw new Error("observer failure");
+      }
+    });
+
+    const result = await adapter.runStage("body", makeInput());
+
+    assert.equal(result.status, "succeeded", result.detail);
   } finally {
     await page.close();
   }
