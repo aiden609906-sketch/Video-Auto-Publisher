@@ -75,7 +75,7 @@ export type DouyinAdapterCallbacks = {
   onStageResult?: (result: StageResult) => void;
 };
 
-export const DOUYIN_ADAPTER_VERSION = "2026.07.20-v3-state-machine-4";
+export const DOUYIN_ADAPTER_VERSION = "2026.07.20-v3-state-machine-5";
 
 export class DouyinAdapter implements PlatformAdapter {
   readonly platform = "douyin" as const;
@@ -433,7 +433,7 @@ export class DouyinAdapter implements PlatformAdapter {
       this.assertCreatorRoute("topics-operation", "topics-editor");
       await this.safeOperation("topics-operation", "topics-editor", () => this.page.keyboard.press("End"));
       this.assertCreatorRoute("topics-operation", "topics-editor");
-      await this.safeOperation("topics-operation", "topics-editor", () => this.page.keyboard.insertText(` #${topic}`));
+      await this.safeOperation("topics-operation", "topics-editor", () => editor.pressSequentially(` #${topic}`));
 
       const suggestionReady = await this.waitForCondition("topics", 2_000, async () => {
         const suggestion = await this.findExactTopicSuggestion(topic);
