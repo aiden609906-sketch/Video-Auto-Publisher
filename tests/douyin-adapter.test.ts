@@ -57,6 +57,18 @@ async function htmlPage(browser: Browser, html: string, url = DOUYIN_UPLOAD_URL)
   return page;
 }
 
+async function prepareExactTopicToolbar(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const editor = document.querySelector('[data-publisher-fixture-scope] [data-slate-editor]');
+    const buttons = document.querySelectorAll('[data-publisher-fixture-scope] .toolbar-comp-button-container-FoZUGL .toolbar-button-spPS4r');
+    if (!editor || buttons.length !== 2) throw new Error("real topic toolbar fixture is incomplete");
+    editor.setAttribute("contenteditable", "true");
+    buttons[0].textContent = "#添加话题";
+    buttons[1].textContent = "@好友";
+    buttons[0].addEventListener("click", () => (editor as HTMLElement).focus());
+  });
+}
+
 test("douyin body succeeds only when the normalized body is readable from the scoped editor", async () => {
   const page = await fixturePage(browser, "form-ready.html");
   try {
@@ -120,6 +132,7 @@ test("douyin title succeeds only when the scoped title input contains the expect
 test("douyin topics succeed only when every expected topic is a visible scoped chip", async () => {
   const page = await combinedFixturePage(browser, ["form-ready.html", "topic-picker-open.html"]);
   try {
+    await prepareExactTopicToolbar(page);
     await page.evaluate(() => {
       const popup = document.querySelector('[class*="mention-suggest-item-container"]') as HTMLElement | null;
       const option = document.querySelector('[class*="mention-suggest-item-container"] [class*="tag-hash-"]');
@@ -150,9 +163,75 @@ test("douyin topics succeed only when every expected topic is a visible scoped c
   }
 });
 
+test("douyin topics open the real picker through the exact scoped toolbar control", async () => {
+  const page = await fixturePage(browser, "form-ready.html");
+  const picker = await readFile(path.join(FIXTURE_DIR, "topic-picker-open.html"), "utf8");
+  const realDateNow = Date.now;
+  const realWaitForTimeout = page.waitForTimeout.bind(page);
+  let fakeNow = realDateNow();
+  Date.now = () => fakeNow;
+  Object.defineProperty(page, "waitForTimeout", {
+    configurable: true,
+    value: async (milliseconds: number) => {
+      fakeNow += milliseconds + 2_000;
+      await realWaitForTimeout(0);
+    }
+  });
+  try {
+    await prepareExactTopicToolbar(page);
+    await page.evaluate((picker) => {
+      const editor = document.querySelector('[data-publisher-fixture-scope] [data-slate-editor]');
+      const topicControl = document.querySelector('[data-publisher-fixture-scope] .toolbar-comp-button-container-FoZUGL .toolbar-button-spPS4r');
+      if (!editor || !topicControl) throw new Error("topic action fixture is incomplete");
+      let controlClicks = 0;
+      let keydown = "";
+      let keypress = "";
+      let inputEvents = 0;
+      topicControl.addEventListener("click", () => {
+        controlClicks += 1;
+      });
+      editor.addEventListener("keydown", (event) => {
+        if (event.key.length === 1) keydown += event.key;
+      });
+      editor.addEventListener("keypress", (event) => {
+        if (event.key.length === 1) keypress += event.key;
+      });
+      editor.addEventListener("input", () => {
+        inputEvents += 1;
+        const expected = "#topic-one";
+        if (document.querySelector(".mention-suggest-item-container-TVOZMl")) return;
+        if (controlClicks !== 1 || !keydown.endsWith(expected) || !keypress.endsWith(expected) || inputEvents < expected.length) return;
+        const parsed = new DOMParser().parseFromString(picker, "text/html");
+        const popup = parsed.body.firstElementChild;
+        const option = popup?.querySelector(".tag-hash-o0tpyE");
+        const name = option?.querySelector('[class*="tag-hash-view-name"]');
+        if (!popup || !option || !name) throw new Error("real picker fragment is incomplete");
+        name.textContent = "topic-one";
+        option.addEventListener("click", () => {
+          const mention = document.createElement("span");
+          mention.setAttribute("data-mention", "fixture");
+          mention.textContent = "#topic-one";
+          editor.append(mention);
+        });
+        document.body.append(popup);
+      });
+    }, picker);
+
+    const result = await new DouyinAdapter(page).runStage("topics", makeInput());
+
+    assert.equal(result.status, "succeeded", `official topic action: ${result.detail}`);
+    assert.equal(await page.locator('[data-publisher-fixture-scope] [data-slate-editor] [data-mention]').count(), 1);
+  } finally {
+    Date.now = realDateNow;
+    Object.defineProperty(page, "waitForTimeout", { configurable: true, value: realWaitForTimeout });
+    await page.close();
+  }
+});
+
 test("douyin click failures expose a safe topic operation without raw selector or page text", async () => {
   const page = await combinedFixturePage(browser, ["form-ready.html", "topic-picker-open.html"]);
   try {
+    await prepareExactTopicToolbar(page);
     await page.evaluate(() => {
       const option = document.querySelector('[class*="mention-suggest-item-container"] [class*="tag-hash-"]');
       const name = option?.querySelector('[class*="tag-hash-view-name"]');
@@ -666,7 +745,7 @@ test("douyin page succeeds only when one visible creator form is owned by the ad
     const adapter = new DouyinAdapter(page);
     const result = await adapter.runStage("page", makeInput());
 
-    assert.equal(adapter.version, "2026.07.20-v3-state-machine-4");
+    assert.equal(adapter.version, "2026.07.20-v3-state-machine-5");
     assert.equal(result.status, "succeeded", result.detail);
     assert.equal(result.evidence?.formCount, 1);
   } finally {

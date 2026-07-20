@@ -46,6 +46,7 @@ type SelectorAlias =
   | "title-input"
   | "body-editor"
   | "topics-editor"
+  | "topic-control"
   | "topic-suggestion"
   | "video-upload-input"
   | "video-upload-root"
@@ -75,7 +76,7 @@ export type DouyinAdapterCallbacks = {
   onStageResult?: (result: StageResult) => void;
 };
 
-export const DOUYIN_ADAPTER_VERSION = "2026.07.20-v3-state-machine-4";
+export const DOUYIN_ADAPTER_VERSION = "2026.07.20-v3-state-machine-5";
 
 export class DouyinAdapter implements PlatformAdapter {
   readonly platform = "douyin" as const;
@@ -428,12 +429,20 @@ export class DouyinAdapter implements PlatformAdapter {
       if ((await editor.count()) !== 1) {
         return { stage: "topics", status: "failed", detail: "topic editor count did not equal one" };
       }
-      this.assertCreatorRoute("topic-click", "topics-editor");
-      await this.safeOperation("topic-click", "topics-editor", () => editor.click());
+      const topicControl = await this.safeOperation("topics-operation", "topic-control", () => this.findExactTopicControl());
+      if (!topicControl) {
+        return { stage: "topics", status: "failed", detail: "expected scoped topic control was not unique" };
+      }
+      this.assertCreatorRoute("topic-click", "topic-control");
+      await this.safeOperation("topic-click", "topic-control", () => topicControl.click());
+      const editorFocused = await this.safeOperation("topics-operation", "topics-editor", () => editor.evaluate((element) => (
+        document.activeElement === element || Boolean(document.activeElement && element.contains(document.activeElement))
+      )));
+      if (!editorFocused) {
+        return { stage: "topics", status: "failed", detail: "topic control did not focus the scoped editor" };
+      }
       this.assertCreatorRoute("topics-operation", "topics-editor");
-      await this.safeOperation("topics-operation", "topics-editor", () => this.page.keyboard.press("End"));
-      this.assertCreatorRoute("topics-operation", "topics-editor");
-      await this.safeOperation("topics-operation", "topics-editor", () => this.page.keyboard.insertText(` #${topic}`));
+      await this.safeOperation("topics-operation", "topics-editor", () => editor.pressSequentially(`#${topic}`));
 
       const suggestionReady = await this.waitForCondition("topics", 2_000, async () => {
         const suggestion = await this.findExactTopicSuggestion(topic);
@@ -816,6 +825,12 @@ export class DouyinAdapter implements PlatformAdapter {
       if (normalizeTopic(await name.innerText()) === topic) matches.push(option);
     }
     return matches.length === 1 ? matches[0] : null;
+  }
+
+  private async findExactTopicControl(): Promise<Locator | null> {
+    const toolbar = this.scoped(".toolbar-comp-button-container-FoZUGL");
+    const control = toolbar.getByText("#添加话题", { exact: true });
+    return (await control.count()) === 1 && (await control.isVisible()) ? control : null;
   }
 
   private scoped(selector: string): Locator {
