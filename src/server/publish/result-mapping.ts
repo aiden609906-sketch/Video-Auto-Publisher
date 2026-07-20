@@ -39,13 +39,23 @@ export function mapPublishOutcome(outcome: PublishOutcome): PublishResultMapping
     };
   }
 
-  if (outcome.browserMode === "manual" && outcome.status !== "failed") {
+  if (outcome.browserMode === "manual") {
+    if (outcome.status === "complete") {
+      return {
+        diagnosticStatus: "ok",
+        postStatus: "opened",
+        videoStatus: "opened",
+        httpStatus: 200,
+        progressLabel: "人工发布材料已准备"
+      };
+    }
+
     return {
-      diagnosticStatus: outcome.status === "complete" ? "ok" : "partial",
-      postStatus: "opened",
-      videoStatus: "opened",
+      diagnosticStatus: outcome.status === "partial" ? "partial" : "error",
+      postStatus: "failed",
+      videoStatus: "failed",
       httpStatus: 200,
-      progressLabel: "人工发布材料已准备"
+      progressLabel: `人工发布材料未准备：${publishStageDetail(outcome)}`
     };
   }
 
@@ -77,6 +87,20 @@ export function normalizePublishOutcome(
 ): PublishOutcome {
   if (isPublishOutcome(result)) return result;
 
+  if (result.browserMode === "manual" && result.copied && !result.loginRequired) {
+    return {
+      status: "complete",
+      browserMode: "manual",
+      platform,
+      stages: [
+        { stage: "page", status: "succeeded", detail: "已打开人工发布页面和素材文件夹" },
+        { stage: "ready", status: "succeeded", detail: "人工发布材料已准备，等待用户在平台页面完成发布" }
+      ],
+      failedStage: null,
+      adapterVersion
+    };
+  }
+
   const stages: StageResult[] = [
     legacyStage("page", !result.loginRequired, result.loginRequired ? "需要登录平台账号" : "已打开发布页面", {
       loginRequired: result.loginRequired
@@ -95,16 +119,24 @@ export function normalizePublishOutcome(
   ];
   const outcome = buildPublishOutcome(platform, result.browserMode, stages, adapterVersion);
 
-  // Manual publishing intentionally stops before an automated readiness check.
-  // Keep that incompleteness visible while the route maps it to the manual task semantics.
+  // A manual result that did not copy/open its materials is a real failure, not
+  // an empty managed workflow that can be considered complete.
   if (result.browserMode === "manual" && !result.loginRequired) {
-    return { ...outcome, status: "partial" };
+    return { ...outcome, status: "failed" };
   }
   return outcome;
 }
 
 function isPublishOutcome(result: PublishOutcome | LegacyPrefillResult): result is PublishOutcome {
   return "status" in result && "stages" in result && Array.isArray(result.stages);
+}
+
+function publishStageDetail(outcome: PublishOutcome): string {
+  const result =
+    (outcome.failedStage && outcome.stages.find((stage) => stage.stage === outcome.failedStage)) ||
+    outcome.stages.find((stage) => stage.status === "failed") ||
+    outcome.stages.at(-1);
+  return result ? `${STAGE_LABELS[result.stage]}（${result.detail}）` : "未提供失败详情";
 }
 
 function legacyStage(

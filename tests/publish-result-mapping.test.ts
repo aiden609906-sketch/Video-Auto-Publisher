@@ -53,7 +53,7 @@ test("failed and login-required outcomes map to truthful persisted states", () =
   assert.match(loginRequired.progressLabel, /登录/);
 });
 
-test("manual outcomes describe prepared materials without claiming automatic completion", () => {
+test("manual partial outcomes fail truthfully with manual stage detail", () => {
   const mapped = mapPublishOutcome({
     status: "partial",
     browserMode: "manual",
@@ -64,10 +64,31 @@ test("manual outcomes describe prepared materials without claiming automatic com
   });
 
   assert.equal(mapped.diagnosticStatus, "partial");
-  assert.equal(mapped.postStatus, "opened");
-  assert.equal(mapped.videoStatus, "opened");
-  assert.equal(mapped.progressLabel, "人工发布材料已准备");
-  assert.doesNotMatch(mapped.progressLabel, /自动.*完成/);
+  assert.equal(mapped.postStatus, "failed");
+  assert.equal(mapped.videoStatus, "failed");
+  assert.match(mapped.progressLabel, /人工发布材料未准备/);
+  assert.match(mapped.progressLabel, /发布前就绪状态/);
+  assert.match(mapped.progressLabel, /manual publish remains/);
+  assert.doesNotMatch(mapped.progressLabel, /人工发布材料已准备|自动填写/);
+});
+
+test("manual failed outcomes never use automatic-fill wording", () => {
+  const mapped = mapPublishOutcome({
+    status: "failed",
+    browserMode: "manual",
+    platform: "xiaohongshu",
+    stages: [{ stage: "video", status: "failed", detail: "素材文件夹未能打开" }],
+    failedStage: "video",
+    adapterVersion: "test"
+  });
+
+  assert.equal(mapped.diagnosticStatus, "error");
+  assert.equal(mapped.postStatus, "failed");
+  assert.equal(mapped.videoStatus, "failed");
+  assert.match(mapped.progressLabel, /人工发布材料未准备/);
+  assert.match(mapped.progressLabel, /视频/);
+  assert.match(mapped.progressLabel, /素材文件夹未能打开/);
+  assert.doesNotMatch(mapped.progressLabel, /自动填写/);
 });
 
 test("legacy managed results become partial because readiness was not verified", () => {
@@ -99,6 +120,33 @@ test("legacy managed results become partial because readiness was not verified",
     ]
   );
   assert.match(outcome.stages.at(-1)?.detail || "", /legacy adapter/i);
+});
+
+test("successful legacy manual result normalizes to complete prepared materials", () => {
+  const outcome = normalizePublishOutcome("xiaohongshu", "legacy-manual-test", {
+    browserMode: "manual",
+    copied: true,
+    loginRequired: false,
+    uploadPrefilled: false,
+    titlePrefilled: false,
+    bodyPrefilled: false,
+    tagsPrefilled: false,
+    coverPrefilled: false,
+    declarationPrefilled: false
+  });
+
+  assert.equal(outcome.status, "complete");
+  assert.equal(outcome.failedStage, null);
+  assert.ok(outcome.stages.length > 0);
+  assert.ok(outcome.stages.every((stage) => stage.status !== "failed"));
+  assert.match(outcome.stages.map((stage) => stage.detail).join(" "), /人工发布材料已准备/);
+  assert.deepEqual(mapPublishOutcome(outcome), {
+    diagnosticStatus: "ok",
+    postStatus: "opened",
+    videoStatus: "opened",
+    httpStatus: 200,
+    progressLabel: "人工发布材料已准备"
+  });
 });
 
 test("legacy booleans map only to their matching stages and never override V3 outcomes", () => {
