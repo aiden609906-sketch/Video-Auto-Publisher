@@ -4,6 +4,7 @@ These fixtures are sanitized, scoped HTML fragments captured from the real Douyi
 
 Captured states:
 
+- `upload-entry-current.html`
 - `form-ready.html`
 - `topic-picker-open.html`
 - `cover-editor-open.html`

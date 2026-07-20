@@ -305,7 +305,8 @@ test("committed Douyin fixtures are scoped, sanitized, and state-distinct", asyn
     "declaration-selected.html",
     "form-ready.html",
     "ready-before-publish.html",
-    "topic-picker-open.html"
+    "topic-picker-open.html",
+    "upload-entry-current.html"
   ];
   const actualFiles = (await readdir(fixtureRoot)).filter((file) => file.endsWith(".html")).sort();
   assert.deepEqual(actualFiles, expectedFiles);

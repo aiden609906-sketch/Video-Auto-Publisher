@@ -75,7 +75,7 @@ export type DouyinAdapterCallbacks = {
   onStageResult?: (result: StageResult) => void;
 };
 
-export const DOUYIN_ADAPTER_VERSION = "2026.07.20-v3-state-machine-1";
+export const DOUYIN_ADAPTER_VERSION = "2026.07.20-v3-state-machine-2";
 
 export class DouyinAdapter implements PlatformAdapter {
   readonly platform = "douyin" as const;
@@ -134,14 +134,14 @@ export class DouyinAdapter implements PlatformAdapter {
 
   private async ensurePage(_input: PublishInput): Promise<StageResult> {
     const form = this.page.locator(".form-container-MDtobK");
-    const uploadRoot = this.page.locator('.semi-upload:has(> input[type="file"][accept*="video" i])');
+    const uploadRoot = this.videoUploadRoot();
     return this.waitForCondition("page", 45_000, async () => {
       const formCount = await form.count();
       const formVisible = formCount === 1 && (await form.isVisible());
       const uploadRootCount = await uploadRoot.count();
       const uploadRootVisible = uploadRootCount === 1 && (await uploadRoot.isVisible());
       const videoInputCount = uploadRootCount === 1
-        ? await uploadRoot.locator(':scope > input[type="file"][accept*="video" i]').count()
+        ? await this.videoUploadInput(uploadRoot).count()
         : 0;
       return {
         matched:
@@ -183,7 +183,7 @@ export class DouyinAdapter implements PlatformAdapter {
     }
 
     this.assertCreatorRoute("video-set-file", "video-upload-input");
-    const uploadRoot = this.page.locator('.semi-upload:has(> input[type="file"][accept*="video" i])');
+    const uploadRoot = this.videoUploadRoot();
     const uploadRootCount = await uploadRoot.count();
     if (uploadRootCount !== 1 || !(await uploadRoot.isVisible())) {
       return {
@@ -193,7 +193,7 @@ export class DouyinAdapter implements PlatformAdapter {
         evidence: { uploadSubmitted: false, uploadRootCount }
       };
     }
-    const videoInput = uploadRoot.locator(':scope > input[type="file"][accept*="video" i]');
+    const videoInput = this.videoUploadInput(uploadRoot);
     if ((await videoInput.count()) !== 1) {
       return {
         stage: "video",
@@ -372,6 +372,16 @@ export class DouyinAdapter implements PlatformAdapter {
         }
       };
     });
+  }
+
+  private videoUploadRoot(): Locator {
+    return this.page.locator(
+      '.semi-upload:has(> input[type="file"][accept*="video" i]), .container-drag-VAfIfu:has(> input[type="file"])'
+    );
+  }
+
+  private videoUploadInput(root: Locator): Locator {
+    return root.locator(':scope > input[type="file"]');
   }
 
   private async fillBody(input: PublishInput): Promise<StageResult> {

@@ -666,10 +666,35 @@ test("douyin page succeeds only when one visible creator form is owned by the ad
     const adapter = new DouyinAdapter(page);
     const result = await adapter.runStage("page", makeInput());
 
-    assert.equal(adapter.version, "2026.07.20-v3-state-machine-1");
+    assert.equal(adapter.version, "2026.07.20-v3-state-machine-2");
     assert.equal(result.status, "succeeded", result.detail);
     assert.equal(result.evidence?.formCount, 1);
   } finally {
+    await page.close();
+  }
+});
+
+test("douyin page recognizes the current sanitized upload entry without fuzzy fallback", async () => {
+  const page = await fixturePage(browser, "upload-entry-current.html");
+  const originalNow = Date.now;
+  let fakeNow = 0;
+  try {
+    Date.now = () => fakeNow;
+    Object.defineProperty(page, "waitForTimeout", {
+      configurable: true,
+      value: async (milliseconds: number) => {
+        fakeNow += milliseconds;
+      }
+    });
+    const result = await new DouyinAdapter(page).runStage("page", makeInput());
+
+    assert.equal(await page.locator('.container-drag-VAfIfu > input[type="file"]').count(), 1);
+    assert.equal(await page.locator('.semi-upload:has(> input[type="file"][accept*="video" i])').count(), 0);
+    assert.equal(result.status, "succeeded", `selector-mismatch: ${result.detail}`);
+    assert.equal(result.evidence?.uploadRootCount, 1);
+    assert.equal(result.evidence?.videoInputCount, 1);
+  } finally {
+    Date.now = originalNow;
     await page.close();
   }
 });
