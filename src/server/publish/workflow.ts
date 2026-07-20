@@ -1,14 +1,23 @@
-import type { PublishOutcome, StageResult } from "../../shared/types.js";
+import type { Platform, PublishOutcome, StageResult } from "../../shared/types.js";
 import { buildPublishOutcome, requiredStagesFor } from "./types.js";
-import type { PlatformAdapter, PublishInput } from "./platform-adapter.js";
+import type { ManagedPlatform, PlatformAdapter, PublishInput } from "./platform-adapter.js";
+
+function managedPlatform(platform: Platform): ManagedPlatform {
+  if (platform === "xiaohongshu") {
+    throw new Error("Xiaohongshu uses manual-assisted publish mode");
+  }
+
+  return platform;
+}
 
 export class PublishWorkflow {
   constructor(private readonly adapter: PlatformAdapter) {}
 
   async run(input: PublishInput): Promise<PublishOutcome> {
+    const platform = managedPlatform(input.platform);
     const results: StageResult[] = [];
 
-    for (const stage of requiredStagesFor(input.platform)) {
+    for (const stage of requiredStagesFor(platform)) {
       const result = await this.adapter.runStage(stage, input);
       results.push(result);
       if (result.status === "failed") {
@@ -16,6 +25,6 @@ export class PublishWorkflow {
       }
     }
 
-    return buildPublishOutcome(input.platform, "managed", results, this.adapter.version);
+    return buildPublishOutcome(platform, "managed", results, this.adapter.version);
   }
 }
