@@ -5,6 +5,7 @@ dist/
 data/
 temp/
 diagnostics/
+.worktrees/
 runtime/
 交付包/
 卖点宣传/
