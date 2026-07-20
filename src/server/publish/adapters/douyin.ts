@@ -75,7 +75,7 @@ export type DouyinAdapterCallbacks = {
   onStageResult?: (result: StageResult) => void;
 };
 
-export const DOUYIN_ADAPTER_VERSION = "2026.07.20-v3-state-machine-2";
+export const DOUYIN_ADAPTER_VERSION = "2026.07.20-v3-state-machine-3";
 
 export class DouyinAdapter implements PlatformAdapter {
   readonly platform = "douyin" as const;
@@ -206,51 +206,57 @@ export class DouyinAdapter implements PlatformAdapter {
     if (!uploadRootHandle) {
       return { stage: "video", status: "failed", detail: "video upload root handle was unavailable" };
     }
-    const beforeUploadSignature = await this.contentSignature(
-      uploadRoot,
-      "video-read-signature",
-      "video-upload-root",
-      true
-    );
+    const videoInputHandle = await videoInput.elementHandle();
+    if (!videoInputHandle) {
+      return { stage: "video", status: "failed", detail: "video upload input handle was unavailable" };
+    }
+    await this.safeOperation("video-read-file", "video-upload-input", () => videoInputHandle.evaluate((element) => {
+      const input = element as HTMLInputElement & {
+        __publisherSelectedFileEvidence?: {
+          connected: boolean;
+          files: Array<{ size: number; type: string; lastModified: number }>;
+        } | null;
+      };
+      input.__publisherSelectedFileEvidence = null;
+      input.addEventListener("input", () => {
+        input.__publisherSelectedFileEvidence = {
+          connected: input.isConnected,
+          files: Array.from(input.files || []).map((file) => ({
+            size: file.size,
+            type: file.type,
+            lastModified: file.lastModified
+          }))
+        };
+      }, { capture: true, once: true });
+    }));
     this.assertCreatorRoute("video-set-file", "video-upload-input");
     await this.safeOperation("video-set-file", "video-upload-input", () => videoInput.setInputFiles(input.filePath));
-    const fileState = await this.safeOperation("video-read-file", "video-upload-input", () => videoInput.evaluate(async (element) => {
-      const input = element as HTMLInputElement;
-      const files = Array.from(input.files || []).map((file) => ({
-        size: file.size,
-        type: file.type,
-        lastModified: file.lastModified
-      }));
-      const bytes = new TextEncoder().encode(JSON.stringify(files));
-      const digest = await crypto.subtle.digest("SHA-256", bytes);
-      return {
-        count: files.length,
-        digest: Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
+    const selectedFileEvidence = await this.safeOperation("video-read-file", "video-upload-input", () => videoInputHandle.evaluate((element) => {
+      const input = element as HTMLInputElement & {
+        __publisherSelectedFileEvidence?: {
+          connected: boolean;
+          files: Array<{ size: number; type: string; lastModified: number }>;
+        } | null;
       };
+      return input.__publisherSelectedFileEvidence || null;
     }));
-    if (fileState.count !== 1) {
+    const selectedFileConnected = selectedFileEvidence?.connected === true;
+    const selectedFiles = selectedFileEvidence?.files || [];
+    const selectedFileVerified = selectedFileConnected && selectedFiles.length === 1;
+    if (!selectedFileVerified) {
       return {
         stage: "video",
         status: "failed",
-        detail: "video input did not retain one submitted file",
-        evidence: { uploadSubmitted: true, safeFileCount: fileState.count }
+        detail: "video input did not provide connected initial file identity evidence",
+        evidence: {
+          uploadSubmitted: true,
+          selectedFileConnected,
+          selectedFileVerified: false,
+          safeFileCount: selectedFiles.length
+        }
       };
     }
-    const afterUploadSignature = await this.contentSignature(
-      uploadRoot,
-      "video-read-signature",
-      "video-upload-root",
-      true
-    );
-    const uploadSignatureChanged = afterUploadSignature !== beforeUploadSignature;
-    if (!uploadSignatureChanged) {
-      return {
-        stage: "video",
-        status: "failed",
-        detail: "video upload signature did not change",
-        evidence: { uploadSubmitted: true, uploadSignatureChanged: false }
-      };
-    }
+    const safeFileDigest = createHash("sha256").update(JSON.stringify(selectedFiles)).digest("hex");
 
     let stableFormReads = 0;
     let stableFormHandle = await form.elementHandle();
@@ -313,12 +319,13 @@ export class DouyinAdapter implements PlatformAdapter {
             : "pending"
         : "pending";
       return {
-        matched: uploadSignatureChanged && uploadTerminal !== "pending",
+        matched: selectedFileVerified && uploadTerminal !== "pending",
         safeState: {
           formCount,
           formReady,
           uploadSubmitted: true,
-          uploadSignatureChanged,
+          selectedFileConnected,
+          selectedFileVerified,
           stableFormReads,
           stableFormMs,
           sameFormNode,
@@ -330,7 +337,7 @@ export class DouyinAdapter implements PlatformAdapter {
           visibleProgressCount,
           maxProgressPercent,
           uploadTerminal,
-          safeFileDigest: fileState.digest
+          safeFileDigest
         }
       };
     });
@@ -338,7 +345,7 @@ export class DouyinAdapter implements PlatformAdapter {
       this.verifiedVideo = {
         inputToken,
         sourceContentDigest: await this.videoSourceContentDigest(input.filePath),
-        safeFileDigest: fileState.digest
+        safeFileDigest
       };
     }
     return result;
