@@ -221,6 +221,7 @@ test("kuaishou cover upload only succeeds after the cover dialog is confirmed an
     calls.push("wait-upload-preview");
     return true;
   };
+  hooks.saveKuaishouCoverDebugSnapshot = async () => undefined;
   hooks.confirmKuaishouCoverDialog = async () => {
     calls.push("confirm-cover-dialog");
     return true;
@@ -251,6 +252,7 @@ test("kuaishou cover upload reports failure when the main cover does not verify"
   hooks.openKuaishouCoverDialog = async () => true;
   hooks.uploadKuaishouCoverFile = async () => true;
   hooks.waitForKuaishouCoverUploadPreview = async () => true;
+  hooks.saveKuaishouCoverDebugSnapshot = async () => undefined;
   hooks.confirmKuaishouCoverDialog = async () => true;
   hooks.waitForKuaishouCoverDialogClosed = async () => true;
   hooks.waitForKuaishouMainCoverChange = async () => false;
@@ -281,6 +283,7 @@ test("kuaishou cover upload waits for the uploaded preview before confirming", a
     calls.push("wait-upload-preview");
     return true;
   };
+  hooks.saveKuaishouCoverDebugSnapshot = async () => undefined;
   hooks.confirmKuaishouCoverDialog = async () => {
     calls.push("confirm-cover-dialog");
     return true;
