@@ -1,6 +1,22 @@
 export const PLATFORMS = ["douyin", "xiaohongshu", "kuaishou", "bilibili"] as const;
 
 export type Platform = (typeof PLATFORMS)[number];
+export type PublishStage = "page" | "video" | "title" | "body" | "topics" | "cover" | "declaration" | "ready";
+export type StageStatus = "succeeded" | "skipped" | "failed";
+export type StageResult = {
+  stage: PublishStage;
+  status: StageStatus;
+  detail: string;
+  evidence?: Record<string, string | number | boolean>;
+};
+export type PublishOutcome = {
+  status: "complete" | "partial" | "login_required" | "failed";
+  browserMode: "managed" | "manual";
+  platform: Platform;
+  stages: StageResult[];
+  failedStage: PublishStage | null;
+  adapterVersion: string;
+};
 export type CoverOrientation = "landscape" | "portrait";
 export type VideoStatus = "detected" | "drafting" | "ready" | "opened" | "posted" | "failed";
 export type PostStatus = "pending" | "ready" | "opened" | "posted" | "failed" | "skipped";
