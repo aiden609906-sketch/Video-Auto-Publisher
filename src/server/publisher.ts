@@ -7,6 +7,8 @@ import { chromium, type BrowserContext, type FileChooser, type Locator, type Pag
 import type { Platform, PlatformPost } from "../shared/types.js";
 import { getProfileDir } from "./account-matrix.js";
 import { formatPostText } from "./copy.js";
+import { PublishAccountLock } from "./publish/account-lock.js";
+import { createWorkflowPage } from "./publish/page-owner.js";
 
 const PLATFORM_URLS: Record<Platform, string> = {
   douyin: "https://creator.douyin.com/creator-micro/content/upload",
@@ -96,6 +98,7 @@ export class Publisher {
   private contexts = new Map<string, BrowserContext>();
   private expectedFileChooserFiles = new WeakMap<Page, string>();
   private activeChannels = new Map<string, (typeof BROWSER_CHANNELS)[number]>();
+  private readonly accountLock = new PublishAccountLock();
 
   constructor(
     private readonly profilesDir: string,
@@ -144,16 +147,18 @@ export class Publisher {
     reportProgress: ProgressReporter = () => undefined
   ) {
     reportProgress("\u6b63\u5728\u590d\u5236\u6587\u6848\u5e76\u6253\u5f00\u5e73\u53f0\u53d1\u5e03\u9875");
-    await this.copy(post);
     if (getPublishMode(platform) === "manual") {
+      await this.copy(post);
       return this.openManualPublishPage(platform, accountId, filePath, covers, reportProgress);
     }
 
-    const context = await this.getContext(platform, accountId);
-    const page = context.pages()[0] || (await context.newPage());
-    const removeFileChooserGuard = this.installFileChooserGuard(page, filePath, covers);
+    return this.accountLock.runExclusive(this.contextKey(platform, accountId), async () => {
+      await this.copy(post);
+      const context = await this.getContext(platform, accountId);
+      const page = await createWorkflowPage(context);
+      const removeFileChooserGuard = this.installFileChooserGuard(page, filePath, covers);
 
-    try {
+      try {
       await page.goto(PLATFORM_URLS[platform], { waitUntil: "domcontentloaded", timeout: 45_000 });
       await page.bringToFront();
 
@@ -260,10 +265,11 @@ export class Publisher {
         coverPrefilled,
         declarationPrefilled
       };
-    } finally {
-      removeFileChooserGuard();
-      this.expectedFileChooserFiles.delete(page);
-    }
+      } finally {
+        removeFileChooserGuard();
+        this.expectedFileChooserFiles.delete(page);
+      }
+    });
   }
 
   private async openManualPublishPage(platform: Platform, accountId: string, filePath: string, covers: CoverPaths, reportProgress: ProgressReporter) {
