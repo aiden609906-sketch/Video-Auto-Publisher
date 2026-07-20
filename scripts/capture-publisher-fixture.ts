@@ -1,4 +1,4 @@
-import { lstat, open, readFile, realpath, rename, unlink } from "node:fs/promises";
+import { link, lstat, open, readFile, realpath, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -36,6 +36,17 @@ function validateAllowedUiText(allowedUiText: readonly string[]) {
   return [...new Set(allowedUiText)];
 }
 
+const RETAINED_STRUCTURAL_TEXT_ATTRIBUTE_VALUE_PATTERN = /^(?:true|false|mixed|-?\d+(?:\.\d+)?)$/i;
+
+export function isSafeRetainedTextAttributeValue(
+  value: string,
+  allowedUiText: readonly string[] = DOUYIN_FIXED_UI_TEXT
+) {
+  const allowed = validateAllowedUiText(allowedUiText);
+  const trimmed = value.trim();
+  return trimmed === "" || trimmed === "[redacted]" || RETAINED_STRUCTURAL_TEXT_ATTRIBUTE_VALUE_PATTERN.test(trimmed) || allowed.some((item) => item === trimmed);
+}
+
 export async function captureSanitizedFixture(
   page: Page,
   selector: string,
@@ -43,9 +54,10 @@ export async function captureSanitizedFixture(
 ): Promise<string> {
   const validatedAllowedUiText = validateAllowedUiText(allowedUiText);
   return page.locator(selector).evaluate(
-    (selected, allowedText) => {
+    (selected, policy) => {
       const clone = selected.cloneNode(true) as HTMLElement;
-      const allowed = new Set(allowedText);
+      const allowed = new Set(policy.allowedText);
+      const retainedStructuralValue = new RegExp(policy.structuralValuePattern, "i");
       const removableSelector = [
         "script",
         "style",
@@ -101,7 +113,7 @@ export async function captureSanitizedFixture(
           if (
             (name === "placeholder" || name.startsWith("aria-")) &&
             attribute.value &&
-            !/^(?:true|false|mixed|-?\d+(?:\.\d+)?)$/i.test(attribute.value.trim()) &&
+            !retainedStructuralValue.test(attribute.value.trim()) &&
             !allowed.has(attribute.value.trim())
           ) {
             element.setAttribute(attribute.name, "[redacted]");
@@ -125,7 +137,10 @@ export async function captureSanitizedFixture(
 
       return clone.outerHTML;
     },
-    validatedAllowedUiText
+    {
+      allowedText: validatedAllowedUiText,
+      structuralValuePattern: RETAINED_STRUCTURAL_TEXT_ATTRIBUTE_VALUE_PATTERN.source
+    }
   );
 }
 
@@ -222,13 +237,12 @@ export async function writeFixtureAtomically(options: AtomicFixtureWriteOptions)
     await assertSafeFixtureRoot(repositoryRoot, fixtureRoot);
     const temporaryMetadata = await lstat(temporaryFile);
     if (!temporaryMetadata.isFile() || temporaryMetadata.isSymbolicLink()) throw new Error("invalid fixture output");
-    const targetMetadata = await lstat(targetFile).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return null;
+    await link(temporaryFile, targetFile).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "EEXIST") throw new Error("fixture output already exists");
       throw error;
     });
-    if (targetMetadata) throw new Error("fixture output already exists");
-
-    await rename(temporaryFile, targetFile);
+    await unlink(temporaryFile);
+    temporaryCreated = false;
     committed = true;
   } finally {
     if (temporaryCreated && !committed) {

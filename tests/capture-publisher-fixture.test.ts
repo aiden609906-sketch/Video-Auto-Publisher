@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { chromium } from "playwright-core";
-import { captureSanitizedFixture, DOUYIN_FIXED_UI_TEXT } from "../scripts/capture-publisher-fixture.js";
+import {
+  captureSanitizedFixture,
+  DOUYIN_FIXED_UI_TEXT,
+  isSafeRetainedTextAttributeValue
+} from "../scripts/capture-publisher-fixture.js";
 
 function runCaptureCli(configFile: string) {
   return new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
@@ -87,6 +91,22 @@ test("fixture sanitizer rejects caller text outside the fixed UI vocabulary", as
     );
 
     await assert.rejects(captureSanitizedFixture(page, "#form", ["private label"]));
+  } finally {
+    await browser.close();
+  }
+});
+
+test("ARIA ID references are not retained as structural values", async () => {
+  assert.equal(isSafeRetainedTextAttributeValue("private-control-id"), false);
+
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  const page = await browser.newPage();
+  try {
+    await page.setContent('<section id="form"><button aria-controls="private-control-id" aria-labelledby="private-label-id">发布</button></section>');
+    const sanitized = await captureSanitizedFixture(page, "#form", ["发布"]);
+    assert.match(sanitized, /aria-controls="\[redacted\]"/);
+    assert.match(sanitized, /aria-labelledby="\[redacted\]"/);
+    assert.doesNotMatch(sanitized, /private-(?:control|label)-id/);
   } finally {
     await browser.close();
   }
@@ -228,6 +248,54 @@ test("atomic fixture write creates a new controlled fixture and refuses overwrit
   }
 });
 
+test("concurrent fixture writers atomically create without clobbering", async () => {
+  const captureModule = (await import("../scripts/capture-publisher-fixture.js")) as unknown as {
+    writeFixtureAtomically: (options: {
+      repositoryRoot: string;
+      fixtureRoot: string;
+      fixtureName: string;
+      html: string;
+      beforeCommit?: () => Promise<void>;
+    }) => Promise<void>;
+  };
+  const directory = await mkdtemp(path.join(tmpdir(), "publisher-fixture-race-"));
+  const repositoryRoot = path.join(directory, "repository");
+  const fixtureRoot = path.join(repositoryRoot, "tests", "fixtures", "publisher", "douyin");
+  const target = path.join(fixtureRoot, "state.html");
+  let arrivals = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const beforeCommit = async () => {
+    arrivals += 1;
+    if (arrivals === 2) release();
+    await gate;
+  };
+  try {
+    await mkdir(fixtureRoot, { recursive: true });
+    const writes = ["<section>first</section>", "<section>second</section>"].map((html) =>
+      captureModule
+        .writeFixtureAtomically({ repositoryRoot, fixtureRoot, fixtureName: "state", html, beforeCommit })
+        .then(() => html)
+    );
+    const results = await Promise.allSettled(writes);
+    const winners = results.filter((result): result is PromiseFulfilledResult<string> => result.status === "fulfilled");
+    const losers = results.filter((result) => result.status === "rejected");
+
+    assert.equal(winners.length, 1);
+    assert.equal(losers.length, 1);
+    assert.equal(await readFile(target, "utf8"), `${winners[0].value}\n`);
+    assert.deepEqual(await readdir(fixtureRoot), ["state.html"]);
+
+    const captureSource = await readFile(path.resolve("scripts", "capture-publisher-fixture.ts"), "utf8");
+    assert.match(captureSource, /await link\(temporaryFile, targetFile\)/);
+    assert.doesNotMatch(captureSource, /await rename\(temporaryFile, targetFile\)/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("committed Douyin fixtures are scoped, sanitized, and state-distinct", async () => {
   const fixtureRoot = path.resolve("tests", "fixtures", "publisher", "douyin");
   const expectedFiles = [
@@ -262,47 +330,29 @@ test("committed Douyin fixtures are scoped, sanitized, and state-distinct", asyn
       assert.notEqual(await root.getAttribute("data-publisher-fixture-scope"), null, fixtureFile);
       assert.equal(await page.locator("script,style,template,img,video,source,a").count(), 0, fixtureFile);
 
-      const invalidAttributes = await page.locator("body *").evaluateAll(
-        (elements, fixedVocabulary) =>
-          elements.flatMap((element) =>
-            [...element.attributes]
-              .filter((attribute) => {
-                const name = attribute.name.toLowerCase();
-                const value = attribute.value.trim();
-                const allowedName =
-                  name === "class" ||
-                  name === "role" ||
-                  name.startsWith("aria-") ||
-                  name.startsWith("data-") ||
-                  name === "type" ||
-                  name === "placeholder" ||
-                  name === "disabled" ||
-                  name === "checked";
-                if (!allowedName) return true;
-                if (name.startsWith("data-")) {
-                  if (/(?:^|-)(?:auth|authorization|cookie|token|secret|key|url|src|href|path|account|user|uid)(?:-|$)/i.test(name.slice(5))) {
-                    return true;
-                  }
-                  return value !== "" && value !== "[redacted]";
-                }
-                if (name === "placeholder" || name.startsWith("aria-")) {
-                  const structuralIdReference =
-                    ["aria-activedescendant", "aria-controls", "aria-describedby", "aria-labelledby", "aria-owns"].includes(name) &&
-                    /^[A-Za-z][A-Za-z0-9_.:-]*(?:\s+[A-Za-z][A-Za-z0-9_.:-]*)*$/.test(value);
-                  return (
-                    value !== "" &&
-                    value !== "[redacted]" &&
-                    !/^(?:true|false|mixed|-?\d+(?:\.\d+)?)$/i.test(value) &&
-                    !structuralIdReference &&
-                    !fixedVocabulary.some((item) => item === value)
-                  );
-                }
-                return false;
-              })
-              .map((attribute) => attribute.name.toLowerCase())
-          ),
-        [...DOUYIN_FIXED_UI_TEXT]
+      const retainedAttributes = await page.locator("body *").evaluateAll((elements) =>
+        elements.flatMap((element) => [...element.attributes].map((attribute) => ({ name: attribute.name.toLowerCase(), value: attribute.value.trim() })))
       );
+      const invalidAttributes = retainedAttributes
+        .filter(({ name, value }) => {
+          const allowedName =
+            name === "class" ||
+            name === "role" ||
+            name.startsWith("aria-") ||
+            name.startsWith("data-") ||
+            name === "type" ||
+            name === "placeholder" ||
+            name === "disabled" ||
+            name === "checked";
+          if (!allowedName) return true;
+          if (name.startsWith("data-")) {
+            if (/(?:^|-)(?:auth|authorization|cookie|token|secret|key|url|src|href|path|account|user|uid)(?:-|$)/i.test(name.slice(5))) return true;
+            return value !== "" && value !== "[redacted]";
+          }
+          if (name === "placeholder" || name.startsWith("aria-")) return !isSafeRetainedTextAttributeValue(value);
+          return false;
+        })
+        .map(({ name }) => name);
       assert.deepEqual(invalidAttributes, [], fixtureFile);
 
       const textValues = await page.evaluate(() => {
