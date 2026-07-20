@@ -9,6 +9,9 @@ import { getProfileDir } from "./account-matrix.js";
 import { formatPostText } from "./copy.js";
 import { PublishAccountLock } from "./publish/account-lock.js";
 import { createWorkflowPage } from "./publish/page-owner.js";
+import { DOUYIN_ADAPTER_VERSION, DouyinAdapter } from "./publish/adapters/douyin.js";
+import { PublishWorkflow } from "./publish/workflow.js";
+import { toLegacyPrefillResult } from "./publish/types.js";
 
 const PLATFORM_URLS: Record<Platform, string> = {
   douyin: "https://creator.douyin.com/creator-micro/content/upload",
@@ -18,7 +21,7 @@ const PLATFORM_URLS: Record<Platform, string> = {
 };
 
 export const ADAPTER_VERSIONS: Record<Platform, string> = {
-  douyin: "2026.07.06-cover-wait-inline-topic-max5-declaration-v1",
+  douyin: DOUYIN_ADAPTER_VERSION,
   xiaohongshu: "2026.06.25-manual-profile-v1",
   kuaishou: "2026.07.05-kuaishou-cover-real-page-v20",
   bilibili: "2026.07.05-bilibili-ai-declaration-real-page-v2"
@@ -71,6 +74,11 @@ const DOUYIN_MAX_HASHTAGS = 5;
 type CoverPaths = { landscape: string | null; portrait: string | null };
 type ProgressReporter = (stage: string) => void;
 
+export type PublisherDependencies = {
+  copy?: (post: PlatformPost) => Promise<void>;
+  getContext?: (platform: Platform, accountId: string) => Promise<BrowserContext>;
+};
+
 const FIELD_SELECTORS: Record<Platform, { title: string[]; body: string[]; tags: string[] }> = {
   douyin: {
     title: [`input[maxlength="30"]`, `input[placeholder*="${WORD.title}"]`],
@@ -102,10 +110,12 @@ export class Publisher {
 
   constructor(
     private readonly profilesDir: string,
-    private readonly headless = false
+    private readonly headless = false,
+    private readonly dependencies: PublisherDependencies = {}
   ) {}
 
   async copy(post: PlatformPost) {
+    if (this.dependencies.copy) return this.dependencies.copy(post);
     await clipboard.write(formatPostText(post));
   }
 
@@ -162,6 +172,21 @@ export class Publisher {
       await page.goto(PLATFORM_URLS[platform], { waitUntil: "domcontentloaded", timeout: 45_000 });
       await page.bringToFront();
 
+      if (platform === "douyin") {
+        const adapter = new DouyinAdapter(page, {
+          onStageStart: (stage) => reportProgress(`Douyin ${stage}`),
+          onStageResult: (result) => reportProgress(`Douyin ${result.stage}: ${result.status}`)
+        });
+        const outcome = await new PublishWorkflow(adapter).run({
+          platform: "douyin",
+          accountId,
+          filePath,
+          post: { ...post, platform: "douyin" },
+          covers
+        });
+        return { ...outcome, ...toLegacyPrefillResult(outcome, true) };
+      }
+
       reportProgress("\u6b63\u5728\u68c0\u67e5\u767b\u5f55\u72b6\u6001\u548c\u53d1\u5e03\u8868\u5355");
       if (platform === "kuaishou") await this.dismissKuaishouDraftPrompt(page);
       if (platform === "bilibili") await this.resumeBilibiliDraftPrompt(page);
@@ -176,7 +201,8 @@ export class Publisher {
     }
 
     reportProgress(videoInput ? "\u89c6\u9891\u5df2\u63d0\u4ea4\uff0c\u7b49\u5f85\u5e73\u53f0\u8868\u5355\u53ef\u586b\u5199" : "\u6b63\u5728\u590d\u7528\u5df2\u6253\u5f00\u7684\u53d1\u5e03\u8868\u5355");
-    if (platform === "douyin") {
+    // Douyin returns from the V3 branch above. Keep this legacy block unreachable until its dedicated cleanup task.
+    if ((platform as Platform) === "douyin") {
       reportProgress("\u6b63\u5728\u70b9\u51fb\u7a7a\u767d\u5904\u5173\u95ed\u8bdd\u9898\u5217\u8868");
       await this.dismissDouyinTopicList(page);
       reportProgress("\u6b63\u5728\u586b\u5199\u6296\u97f3\u6807\u9898");
@@ -2911,6 +2937,7 @@ export class Publisher {
   }
 
   private async getContext(platform: Platform, accountId: string) {
+    if (this.dependencies.getContext) return this.dependencies.getContext(platform, accountId);
     const key = this.contextKey(platform, accountId);
     const existing = this.contexts.get(key);
     if (existing) return existing;

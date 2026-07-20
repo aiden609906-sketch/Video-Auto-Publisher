@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Publisher } from "../src/server/publisher.js";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { chromium } from "playwright-core";
+import { Publisher, type PublisherDependencies } from "../src/server/publisher.js";
 import type { PlatformPost } from "../src/shared/types.js";
 
 function makeDouyinPost(): PlatformPost {
@@ -18,342 +21,49 @@ function makeDouyinPost(): PlatformPost {
   };
 }
 
-function makePublisherWithPage() {
-  const publisher = new Publisher("profiles", true) as unknown as Record<string, unknown>;
-  const page = {
-    goto: async () => undefined,
-    bringToFront: async () => undefined
-  };
-
-  publisher.copy = async () => undefined;
-  publisher.getContext = async () => ({
-    pages: () => [page],
-    newPage: async () => page
-  });
-  publisher.installFileChooserGuard = () => () => undefined;
-  publisher.hasPublishingForm = async () => true;
-  publisher.dismissDouyinTopicList = async () => undefined;
-  publisher.tryUploadCover = async () => false;
-  publisher.tryFillTitle = async () => true;
-  publisher.tryFillBody = async () => true;
-  publisher.trySelectAiDeclaration = async () => true;
-
-  return { publisher: publisher as unknown as Publisher, hooks: publisher };
-}
-
-test("douyin revalidates body after first body fill reports success", async () => {
-  const { publisher, hooks } = makePublisherWithPage();
-  let ensureCalls = 0;
-  hooks.ensureDouyinBody = async () => {
-    ensureCalls += 1;
-    return true;
-  };
-
-  const result = await publisher.open(
-    "douyin",
-    "default-douyin",
-    "video.mp4",
-    makeDouyinPost(),
-    { landscape: null, portrait: null }
+test("Publisher.open delegates Douyin to the V3 workflow and derives legacy compatibility fields", async () => {
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  const context = await browser.newContext();
+  const fixture = await readFile(path.resolve("tests/fixtures/publisher/douyin/ready-before-publish.html"), "utf8");
+  await context.route("https://creator.douyin.com/**", (route) =>
+    route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: fixture })
   );
-
-  assert.equal(ensureCalls, 2);
-  assert.equal(result.bodyPrefilled, true);
-  assert.equal(result.tagsPrefilled, true);
-  assert.equal(result.declarationPrefilled, true);
-});
-
-test("douyin reports body fill failure when final body verification fails", async () => {
-  const { publisher, hooks } = makePublisherWithPage();
-  hooks.ensureDouyinBody = async () => false;
-
-  const result = await publisher.open(
-    "douyin",
-    "default-douyin",
-    "video.mp4",
-    makeDouyinPost(),
-    { landscape: null, portrait: null }
-  );
-
-  assert.equal(result.bodyPrefilled, false);
-  assert.equal(result.tagsPrefilled, false);
-  assert.equal(result.declarationPrefilled, true);
-});
-
-test("douyin keeps fallback body fill when first body fill fails", async () => {
-  const { publisher, hooks } = makePublisherWithPage();
-  let ensureCalls = 0;
-  hooks.tryFillBody = async () => false;
-  hooks.ensureDouyinBody = async () => {
-    ensureCalls += 1;
-    return true;
+  const dependencies: PublisherDependencies = {
+    copy: async () => undefined,
+    getContext: async () => context
   };
+  const publisher = new Publisher("profiles", true, dependencies);
+  const post = makeDouyinPost();
+  post.hashtags = [];
 
-  const result = await publisher.open(
-    "douyin",
-    "default-douyin",
-    "video.mp4",
-    makeDouyinPost(),
-    { landscape: null, portrait: null }
-  );
+  try {
+    const result = await publisher.open(
+      "douyin",
+      "default-douyin",
+      "video.mp4",
+      post,
+      { landscape: null, portrait: null }
+    );
 
-  assert.equal(ensureCalls, 2);
-  assert.equal(result.bodyPrefilled, true);
-  assert.equal(result.tagsPrefilled, true);
-  assert.equal(result.declarationPrefilled, true);
-});
-
-test("douyin fills text before starting slow cover upload", async () => {
-  const { publisher, hooks } = makePublisherWithPage();
-  const calls: string[] = [];
-
-  hooks.tryUploadCover = async () => {
-    calls.push("cover");
-    return true;
-  };
-  hooks.tryFillTitle = async () => {
-    calls.push("title");
-    return true;
-  };
-  hooks.tryFillBody = async () => {
-    calls.push("body");
-    return true;
-  };
-  hooks.ensureDouyinBody = async () => {
-    calls.push("verify-body");
-    return true;
-  };
-  hooks.trySelectAiDeclaration = async () => {
-    calls.push("declaration");
-    return true;
-  };
-
-  await publisher.open("douyin", "default-douyin", "video.mp4", makeDouyinPost(), {
-    landscape: "cover.png",
-    portrait: null
-  });
-
-  assert.deepEqual(calls, ["title", "body", "verify-body", "cover", "verify-body", "declaration"]);
-});
-
-test("douyin cover upload fails when editor does not close after clicking complete", async () => {
-  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
-  const calls: string[] = [];
-  const page = {
-    waitForTimeout: async () => undefined
-  };
-
-  hooks.openDouyinCoverEditor = async () => true;
-  hooks.clickDouyinCoverEditorText = async (_page: unknown, label: string) => {
-    calls.push(`click:${label}`);
-    return true;
-  };
-  hooks.uploadDouyinCoverFile = async () => {
-    calls.push("upload-file");
-    return true;
-  };
-  hooks.waitForDouyinCoverApplied = async () => {
-    calls.push("wait-applied");
-    return true;
-  };
-  hooks.waitForCoverDialogClosed = async () => {
-    calls.push("wait-closed");
-    return false;
-  };
-
-  const uploaded = await (hooks.uploadDouyinCovers as (page: unknown, covers: { landscape: string | null; portrait: string | null }) => Promise<boolean>)(
-    page,
-    { landscape: "cover.png", portrait: null }
-  );
-
-  assert.equal(uploaded, false);
-  assert.ok(calls.includes("wait-applied"));
-  assert.ok(calls.includes("wait-closed"));
-});
-
-test("douyin body fill accepts verified intro and topics", async () => {
-  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
-  const page = {
-    waitForTimeout: async () => undefined
-  };
-
-  hooks.tryFillDouyinIntro = async () => true;
-  hooks.tryFillDouyinTopics = async () => true;
-
-  const filled = await (hooks.tryFillBody as (page: unknown, platform: string, post: PlatformPost, timeoutMs: number) => Promise<boolean>)(
-    page,
-    "douyin",
-    makeDouyinPost(),
-    10_000
-  );
-
-  assert.equal(filled, true);
-});
-
-test("douyin topic fill uses inline picker when no standalone topic input exists", async () => {
-  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
-  const calls: string[] = [];
-  const added = new Set<string>();
-  const page = {
-    waitForTimeout: async () => undefined
-  };
-
-  hooks.hasDouyinTopic = async (_page: unknown, tag: string) => added.has(tag);
-  hooks.findDouyinTopicInput = async () => null;
-  hooks.tryFillDouyinInlineTopic = async (_page: unknown, tag: string) => {
-    calls.push(`inline:${tag}`);
-    added.add(tag);
-    return true;
-  };
-  hooks.openDouyinTopicInput = async () => {
-    calls.push("open-topic");
-    return true;
-  };
-
-  const filled = await (hooks.tryFillDouyinTopics as (page: unknown, hashtags: string[], timeoutMs: number) => Promise<boolean>)(
-    page,
-    ["tag-one", "tag-two"],
-    10_000
-  );
-
-  assert.equal(filled, true);
-  assert.deepEqual(calls, ["inline:tag-one", "inline:tag-two"]);
-});
-
-test("douyin topic fill sends at most five unique topics", async () => {
-  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
-  const calls: string[] = [];
-  const added = new Set<string>();
-  const page = {
-    waitForTimeout: async () => undefined
-  };
-
-  hooks.hasDouyinTopic = async (_page: unknown, tag: string) => added.has(tag);
-  hooks.findDouyinTopicInput = async () => null;
-  hooks.tryFillDouyinInlineTopic = async (_page: unknown, tag: string) => {
-    calls.push(tag);
-    added.add(tag);
-    return true;
-  };
-
-  const filled = await (hooks.tryFillDouyinTopics as (page: unknown, hashtags: string[], timeoutMs: number) => Promise<boolean>)(
-    page,
-    ["tag-one", "#tag-two", "tag-three", "tag-four", "tag-five", "tag-six", "TAG-TWO"],
-    10_000
-  );
-
-  assert.equal(filled, true);
-  assert.deepEqual(calls, ["tag-one", "tag-two", "tag-three", "tag-four", "tag-five"]);
-});
-
-test("douyin body fill fails when intro cannot be verified", async () => {
-  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
-  const page = {
-    waitForTimeout: async () => undefined
-  };
-
-  hooks.tryFillDouyinIntro = async () => false;
-  hooks.tryFillDouyinTopics = async () => true;
-
-  const filled = await (hooks.tryFillBody as (page: unknown, platform: string, post: PlatformPost, timeoutMs: number) => Promise<boolean>)(
-    page,
-    "douyin",
-    makeDouyinPost(),
-    10_000
-  );
-
-  assert.equal(filled, false);
-});
-
-test("douyin AI declaration confirms the modal after selecting the AI generated option", async () => {
-  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
-  const calls: string[] = [];
-  const page = {
-    waitForTimeout: async () => undefined
-  };
-
-  hooks.closeTransientMenus = async () => undefined;
-  hooks.scrollDeclarationSectionIntoView = async () => undefined;
-  hooks.selectAiDeclarationByDom = async () => true;
-  hooks.selectDouyinAiDeclarationInModal = async () => {
-    calls.push("select-modal-option");
-    return true;
-  };
-  hooks.clickDouyinDeclarationConfirm = async () => {
-    calls.push("confirm-modal");
-    return true;
-  };
-
-  const selected = await (hooks.trySelectAiDeclaration as (page: unknown, platform: string) => Promise<boolean>)(
-    page,
-    "douyin"
-  );
-
-  assert.equal(selected, true);
-  assert.deepEqual(calls, ["select-modal-option", "confirm-modal"]);
-});
-
-test("AI declaration falls back to declaration labels before selecting the AI generated option", async () => {
-  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
-  const calls: string[] = [];
-  const page = {
-    waitForTimeout: async () => undefined
-  };
-
-  hooks.closeTransientMenus = async () => undefined;
-  hooks.scrollDeclarationSectionIntoView = async () => undefined;
-  hooks.selectAiDeclarationByDom = async () => {
-    calls.push("dom");
-    return false;
-  };
-  hooks.clickVisibleText = async (_page: unknown, label: string) => {
-    calls.push(`label:${label}`);
-    return label === "\u4f5c\u8005\u58f0\u660e";
-  };
-  hooks.clickAiGeneratedOption = async () => {
-    calls.push("ai-option");
-    return true;
-  };
-  hooks.selectDouyinAiDeclarationInModal = async () => {
-    calls.push("select-modal-option");
-    return true;
-  };
-  hooks.clickDouyinDeclarationConfirm = async () => {
-    calls.push("confirm-modal");
-    return true;
-  };
-
-  const selected = await (hooks.trySelectAiDeclaration as (page: unknown, platform: string) => Promise<boolean>)(
-    page,
-    "douyin"
-  );
-
-  assert.equal(selected, true);
-  assert.deepEqual(calls, ["dom", "label:\u4f5c\u8005\u58f0\u660e", "dom", "ai-option", "select-modal-option", "confirm-modal"]);
-});
-
-test("douyin AI declaration does not report success while the modal remains open", async () => {
-  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
-  const page = {
-    waitForTimeout: async () => undefined
-  };
-
-  hooks.closeTransientMenus = async () => undefined;
-  hooks.scrollDeclarationSectionIntoView = async () => undefined;
-  hooks.selectAiDeclarationByDom = async () => true;
-  hooks.selectDouyinAiDeclarationInModal = async () => true;
-  hooks.clickDouyinDeclarationConfirm = async () => false;
-  hooks.clickVisibleDialogText = async () => false;
-  hooks.clickVisibleText = async () => false;
-  hooks.clickAiGeneratedOption = async () => false;
-  hooks.hasVisibleDouyinDeclarationModal = async () => true;
-
-  const selected = await (hooks.trySelectAiDeclaration as (page: unknown, platform: string) => Promise<boolean>)(
-    page,
-    "douyin"
-  );
-
-  assert.equal(selected, false);
+    assert.equal(result.status, "complete");
+    assert.equal(result.adapterVersion, "2026.07.20-v3-state-machine-1");
+    assert.deepEqual(result.stages.map((stage) => stage.stage), [
+      "page",
+      "video",
+      "title",
+      "body",
+      "topics",
+      "cover",
+      "declaration",
+      "ready"
+    ]);
+    assert.equal(result.titlePrefilled, true);
+    assert.equal(result.bodyPrefilled, true);
+    assert.equal(result.declarationPrefilled, true);
+  } finally {
+    await context.close();
+    await browser.close();
+  }
 });
 
 test("kuaishou AI declaration opens the author declaration dropdown before selecting", async () => {
@@ -588,14 +298,4 @@ test("bilibili cover upload fails when the cover editor cannot be completed", as
 
   assert.equal(uploaded, false);
   assert.deepEqual(uploadedFiles, ["cover.png", "cover.png"]);
-});
-
-test("douyin body verification tolerates editor helper text after successful paste", () => {
-  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
-  const expected = "body text #tag-one #tag-two";
-  const actual = `${expected}\n#add topic    @friend\nrecommend  #magic`;
-
-  const matches = (hooks.editorTextMatchesExpected as (actual: string, expected: string) => boolean)(actual, expected);
-
-  assert.equal(matches, true);
 });
