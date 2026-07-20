@@ -1,25 +1,47 @@
-import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { lstat, open, readFile, realpath, rename, unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium, type Page } from "playwright-core";
 
-const DEFAULT_ALLOWED_UI_TEXT = [
+export const DOUYIN_FIXED_UI_TEXT = [
   "标题",
   "简介",
+  "作品简介",
+  "添加作品简介",
   "话题",
+  "添加话题",
   "封面",
+  "封面设置",
+  "选择封面",
+  "上传封面",
+  "上传图片",
+  "设置横封面",
+  "设置竖封面",
   "声明",
+  "作者声明",
+  "内容声明",
   "内容由AI生成",
+  "AI生成",
   "确定",
+  "确认",
   "完成",
   "发布"
 ] as const;
 
+const DOUYIN_FIXED_UI_TEXT_SET = new Set<string>(DOUYIN_FIXED_UI_TEXT);
+
+function validateAllowedUiText(allowedUiText: readonly string[]) {
+  if (allowedUiText.some((item) => !DOUYIN_FIXED_UI_TEXT_SET.has(item))) throw new Error("invalid allowed UI text");
+  return [...new Set(allowedUiText)];
+}
+
 export async function captureSanitizedFixture(
   page: Page,
   selector: string,
-  allowedUiText: readonly string[] = DEFAULT_ALLOWED_UI_TEXT
+  allowedUiText: readonly string[] = DOUYIN_FIXED_UI_TEXT
 ): Promise<string> {
+  const validatedAllowedUiText = validateAllowedUiText(allowedUiText);
   return page.locator(selector).evaluate(
     (selected, allowedText) => {
       const clone = selected.cloneNode(true) as HTMLElement;
@@ -103,7 +125,7 @@ export async function captureSanitizedFixture(
 
       return clone.outerHTML;
     },
-    [...DEFAULT_ALLOWED_UI_TEXT, ...allowedUiText]
+    validatedAllowedUiText
   );
 }
 
@@ -119,19 +141,45 @@ type CaptureCliConfig = {
   timeoutMs?: number;
 };
 
-const EXPECTED_FIXTURE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "tests", "fixtures", "publisher", "douyin");
+const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const EXPECTED_FIXTURE_ROOT = path.join(REPOSITORY_ROOT, "tests", "fixtures", "publisher", "douyin");
 
 function pathsMatch(left: string, right: string) {
   return path.relative(left, right) === "" && path.relative(right, left) === "";
+}
+
+function isPathContained(root: string, candidate: string) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
+}
+
+export async function assertSafeFixtureRoot(repositoryRoot: string, fixtureRoot: string) {
+  const lexicalRepositoryRoot = path.resolve(repositoryRoot);
+  const lexicalFixtureRoot = path.resolve(fixtureRoot);
+  if (!isPathContained(lexicalRepositoryRoot, lexicalFixtureRoot) || pathsMatch(lexicalRepositoryRoot, lexicalFixtureRoot)) {
+    throw new Error("invalid fixture root");
+  }
+
+  const relativeComponents = path.relative(lexicalRepositoryRoot, lexicalFixtureRoot).split(path.sep).filter(Boolean);
+  for (let index = 0; index <= relativeComponents.length; index += 1) {
+    const component = path.join(lexicalRepositoryRoot, ...relativeComponents.slice(0, index));
+    const metadata = await lstat(component);
+    if (metadata.isSymbolicLink()) throw new Error("invalid fixture root");
+    if (!pathsMatch(component, await realpath(component))) throw new Error("invalid fixture root");
+  }
+
+  const realRepositoryRoot = await realpath(lexicalRepositoryRoot);
+  const realFixtureRoot = await realpath(lexicalFixtureRoot);
+  if (!isPathContained(realRepositoryRoot, realFixtureRoot) || pathsMatch(realRepositoryRoot, realFixtureRoot)) {
+    throw new Error("invalid fixture root");
+  }
 }
 
 export async function resolveFixtureOutputPath(fixtureDir: string, fixtureName: string) {
   if (!fixtureDir.trim() || !/^[a-z0-9][a-z0-9-]*$/i.test(fixtureName)) throw new Error("invalid fixture output");
   const requestedRoot = path.resolve(fixtureDir);
   if (!pathsMatch(requestedRoot, EXPECTED_FIXTURE_ROOT)) throw new Error("invalid fixture output");
-
-  const [requestedRealRoot, expectedRealRoot] = await Promise.all([realpath(requestedRoot), realpath(EXPECTED_FIXTURE_ROOT)]);
-  if (!pathsMatch(requestedRealRoot, expectedRealRoot)) throw new Error("invalid fixture output");
+  await assertSafeFixtureRoot(REPOSITORY_ROOT, EXPECTED_FIXTURE_ROOT);
 
   const outputFile = path.join(requestedRoot, `${fixtureName}.html`);
   const outputMetadata = await lstat(outputFile).catch((error: NodeJS.ErrnoException) => {
@@ -140,6 +188,55 @@ export async function resolveFixtureOutputPath(fixtureDir: string, fixtureName: 
   });
   if (outputMetadata?.isSymbolicLink()) throw new Error("invalid fixture output");
   return outputFile;
+}
+
+type AtomicFixtureWriteOptions = {
+  repositoryRoot: string;
+  fixtureRoot: string;
+  fixtureName: string;
+  html: string;
+  beforeCommit?: () => Promise<void>;
+};
+
+export async function writeFixtureAtomically(options: AtomicFixtureWriteOptions) {
+  if (!/^[a-z0-9][a-z0-9-]*$/i.test(options.fixtureName)) throw new Error("invalid fixture output");
+  const repositoryRoot = path.resolve(options.repositoryRoot);
+  const fixtureRoot = path.resolve(options.fixtureRoot);
+  const targetFile = path.join(fixtureRoot, `${options.fixtureName}.html`);
+  const temporaryFile = path.join(fixtureRoot, `.${options.fixtureName}.${randomUUID()}.tmp`);
+  let temporaryCreated = false;
+  let committed = false;
+
+  try {
+    await assertSafeFixtureRoot(repositoryRoot, fixtureRoot);
+    const handle = await open(temporaryFile, "wx", 0o600);
+    temporaryCreated = true;
+    try {
+      await handle.writeFile(`${options.html}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+
+    await options.beforeCommit?.();
+    await assertSafeFixtureRoot(repositoryRoot, fixtureRoot);
+    const temporaryMetadata = await lstat(temporaryFile);
+    if (!temporaryMetadata.isFile() || temporaryMetadata.isSymbolicLink()) throw new Error("invalid fixture output");
+    const targetMetadata = await lstat(targetFile).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (targetMetadata) throw new Error("fixture output already exists");
+
+    await rename(temporaryFile, targetFile);
+    committed = true;
+  } finally {
+    if (temporaryCreated && !committed) {
+      await assertSafeFixtureRoot(repositoryRoot, fixtureRoot)
+        .then(() => unlink(temporaryFile))
+        .catch(() => undefined);
+    }
+  }
 }
 
 function parseCliConfig(value: unknown): CaptureCliConfig {
@@ -153,6 +250,7 @@ function parseCliConfig(value: unknown): CaptureCliConfig {
   if (config.allowedUiText !== undefined && (!Array.isArray(config.allowedUiText) || config.allowedUiText.some((item) => typeof item !== "string"))) {
     throw new Error("invalid config");
   }
+  if (config.allowedUiText !== undefined) validateAllowedUiText(config.allowedUiText as string[]);
   if (config.headless !== undefined && typeof config.headless !== "boolean") throw new Error("invalid config");
   if (config.timeoutMs !== undefined && (!Number.isInteger(config.timeoutMs) || (config.timeoutMs as number) <= 0)) throw new Error("invalid config");
   const parsedUrl = new URL(config.url as string);
@@ -174,9 +272,13 @@ async function runCli(configFile: string | undefined) {
     const page = context.pages()[0] || (await context.newPage());
     await page.goto(config.url, { waitUntil: "domcontentloaded", timeout: config.timeoutMs || 45_000 });
     await page.locator(config.selector).waitFor({ state: "attached", timeout: config.timeoutMs || 120_000 });
-    const html = await captureSanitizedFixture(page, config.selector, config.allowedUiText || []);
-    await mkdir(fixtureDir, { recursive: true });
-    await writeFile(outputFile, `${html}\n`, "utf8");
+    const html = await captureSanitizedFixture(page, config.selector, config.allowedUiText || DOUYIN_FIXED_UI_TEXT);
+    await writeFixtureAtomically({
+      repositoryRoot: REPOSITORY_ROOT,
+      fixtureRoot: fixtureDir,
+      fixtureName: config.fixtureName,
+      html
+    });
   } finally {
     await context.close().catch(() => undefined);
   }

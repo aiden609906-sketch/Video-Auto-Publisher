@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { chromium } from "playwright-core";
-import { captureSanitizedFixture } from "../scripts/capture-publisher-fixture.js";
+import { captureSanitizedFixture, DOUYIN_FIXED_UI_TEXT } from "../scripts/capture-publisher-fixture.js";
 
 function runCaptureCli(configFile: string) {
   return new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
@@ -78,6 +78,20 @@ test("fixture sanitizer fails closed on template contents", async () => {
   }
 });
 
+test("fixture sanitizer rejects caller text outside the fixed UI vocabulary", async () => {
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  const page = await browser.newPage();
+  try {
+    await page.setContent(
+      '<section id="form"><input placeholder="private label" aria-label="private label" aria-description="private label"><div>private label</div></section>'
+    );
+
+    await assert.rejects(captureSanitizedFixture(page, "#form", ["private label"]));
+  } finally {
+    await browser.close();
+  }
+});
+
 test("fixture capture CLI refuses configs without an explicit fixture directory", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "publisher-fixture-cli-"));
   const configFile = path.join(directory, "capture.json");
@@ -115,6 +129,105 @@ test("fixture output paths stay inside the repository Douyin fixture root", asyn
   }
 });
 
+test("fixture root rejects a junction component that resolves outside the repository", async () => {
+  const captureModule = (await import("../scripts/capture-publisher-fixture.js")) as unknown as {
+    assertSafeFixtureRoot?: (repositoryRoot: string, fixtureRoot: string) => Promise<void>;
+  };
+  assert.equal(typeof captureModule.assertSafeFixtureRoot, "function");
+  const directory = await mkdtemp(path.join(tmpdir(), "publisher-fixture-root-"));
+  const repositoryRoot = path.join(directory, "repository");
+  const fixtureParent = path.join(repositoryRoot, "tests", "fixtures", "publisher");
+  const outsideRoot = path.join(directory, "outside");
+  const fixtureRoot = path.join(fixtureParent, "douyin");
+  try {
+    await mkdir(fixtureParent, { recursive: true });
+    await mkdir(outsideRoot, { recursive: true });
+    await symlink(outsideRoot, fixtureRoot, "junction");
+
+    await assert.rejects(captureModule.assertSafeFixtureRoot!(repositoryRoot, fixtureRoot));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("atomic fixture write refuses a target replaced by a junction before commit", async () => {
+  const captureModule = (await import("../scripts/capture-publisher-fixture.js")) as unknown as {
+    writeFixtureAtomically?: (options: {
+      repositoryRoot: string;
+      fixtureRoot: string;
+      fixtureName: string;
+      html: string;
+      beforeCommit?: () => Promise<void>;
+    }) => Promise<void>;
+  };
+  assert.equal(typeof captureModule.writeFixtureAtomically, "function");
+  const directory = await mkdtemp(path.join(tmpdir(), "publisher-fixture-commit-"));
+  const repositoryRoot = path.join(directory, "repository");
+  const fixtureRoot = path.join(repositoryRoot, "tests", "fixtures", "publisher", "douyin");
+  const outsideRoot = path.join(directory, "outside");
+  const outsideSentinel = path.join(outsideRoot, "sentinel.txt");
+  const target = path.join(fixtureRoot, "state.html");
+  try {
+    await mkdir(fixtureRoot, { recursive: true });
+    await mkdir(outsideRoot, { recursive: true });
+    await writeFile(outsideSentinel, "outside unchanged", "utf8");
+
+    await assert.rejects(
+      captureModule.writeFixtureAtomically!({
+        repositoryRoot,
+        fixtureRoot,
+        fixtureName: "state",
+        html: "<section>[redacted]</section>",
+        beforeCommit: async () => symlink(outsideRoot, target, "junction")
+      })
+    );
+
+    assert.equal(await readFile(outsideSentinel, "utf8"), "outside unchanged");
+    assert.deepEqual((await readdir(fixtureRoot)).sort(), ["state.html"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("atomic fixture write creates a new controlled fixture and refuses overwrite", async () => {
+  const captureModule = (await import("../scripts/capture-publisher-fixture.js")) as unknown as {
+    writeFixtureAtomically: (options: {
+      repositoryRoot: string;
+      fixtureRoot: string;
+      fixtureName: string;
+      html: string;
+    }) => Promise<void>;
+  };
+  const directory = await mkdtemp(path.join(tmpdir(), "publisher-fixture-create-"));
+  const repositoryRoot = path.join(directory, "repository");
+  const fixtureRoot = path.join(repositoryRoot, "tests", "fixtures", "publisher", "douyin");
+  const target = path.join(fixtureRoot, "state.html");
+  try {
+    await mkdir(fixtureRoot, { recursive: true });
+    await captureModule.writeFixtureAtomically({
+      repositoryRoot,
+      fixtureRoot,
+      fixtureName: "state",
+      html: "<section>[redacted]</section>"
+    });
+
+    assert.equal(await readFile(target, "utf8"), "<section>[redacted]</section>\n");
+    assert.deepEqual(await readdir(fixtureRoot), ["state.html"]);
+    await assert.rejects(
+      captureModule.writeFixtureAtomically({
+        repositoryRoot,
+        fixtureRoot,
+        fixtureName: "state",
+        html: "<section>replacement</section>"
+      })
+    );
+    assert.equal(await readFile(target, "utf8"), "<section>[redacted]</section>\n");
+    assert.deepEqual(await readdir(fixtureRoot), ["state.html"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("committed Douyin fixtures are scoped, sanitized, and state-distinct", async () => {
   const fixtureRoot = path.resolve("tests", "fixtures", "publisher", "douyin");
   const expectedFiles = [
@@ -129,31 +242,7 @@ test("committed Douyin fixtures are scoped, sanitized, and state-distinct", asyn
   const actualFiles = (await readdir(fixtureRoot)).filter((file) => file.endsWith(".html")).sort();
   assert.deepEqual(actualFiles, expectedFiles);
 
-  const fixedUiVocabulary = new Set([
-    "[redacted]",
-    "标题",
-    "简介",
-    "作品简介",
-    "添加作品简介",
-    "话题",
-    "添加话题",
-    "封面",
-    "封面设置",
-    "选择封面",
-    "上传封面",
-    "上传图片",
-    "设置横封面",
-    "设置竖封面",
-    "声明",
-    "作者声明",
-    "内容声明",
-    "内容由AI生成",
-    "AI生成",
-    "确定",
-    "确认",
-    "完成",
-    "发布"
-  ]);
+  const fixedUiVocabulary = new Set(["[redacted]", ...DOUYIN_FIXED_UI_TEXT]);
   const fixedUiTokens = [...fixedUiVocabulary].sort((left, right) => right.length - left.length);
   const browser = await chromium.launch({ channel: "msedge", headless: true });
   const page = await browser.newPage();
@@ -173,22 +262,46 @@ test("committed Douyin fixtures are scoped, sanitized, and state-distinct", asyn
       assert.notEqual(await root.getAttribute("data-publisher-fixture-scope"), null, fixtureFile);
       assert.equal(await page.locator("script,style,template,img,video,source,a").count(), 0, fixtureFile);
 
-      const invalidAttributes = await page.locator("body *").evaluateAll((elements) =>
-        elements.flatMap((element) =>
-          [...element.attributes]
-            .map((attribute) => attribute.name.toLowerCase())
-            .filter(
-              (name) =>
-                name !== "class" &&
-                name !== "role" &&
-                !name.startsWith("aria-") &&
-                !name.startsWith("data-") &&
-                name !== "type" &&
-                name !== "placeholder" &&
-                name !== "disabled" &&
-                name !== "checked"
-            )
-        )
+      const invalidAttributes = await page.locator("body *").evaluateAll(
+        (elements, fixedVocabulary) =>
+          elements.flatMap((element) =>
+            [...element.attributes]
+              .filter((attribute) => {
+                const name = attribute.name.toLowerCase();
+                const value = attribute.value.trim();
+                const allowedName =
+                  name === "class" ||
+                  name === "role" ||
+                  name.startsWith("aria-") ||
+                  name.startsWith("data-") ||
+                  name === "type" ||
+                  name === "placeholder" ||
+                  name === "disabled" ||
+                  name === "checked";
+                if (!allowedName) return true;
+                if (name.startsWith("data-")) {
+                  if (/(?:^|-)(?:auth|authorization|cookie|token|secret|key|url|src|href|path|account|user|uid)(?:-|$)/i.test(name.slice(5))) {
+                    return true;
+                  }
+                  return value !== "" && value !== "[redacted]";
+                }
+                if (name === "placeholder" || name.startsWith("aria-")) {
+                  const structuralIdReference =
+                    ["aria-activedescendant", "aria-controls", "aria-describedby", "aria-labelledby", "aria-owns"].includes(name) &&
+                    /^[A-Za-z][A-Za-z0-9_.:-]*(?:\s+[A-Za-z][A-Za-z0-9_.:-]*)*$/.test(value);
+                  return (
+                    value !== "" &&
+                    value !== "[redacted]" &&
+                    !/^(?:true|false|mixed|-?\d+(?:\.\d+)?)$/i.test(value) &&
+                    !structuralIdReference &&
+                    !fixedVocabulary.some((item) => item === value)
+                  );
+                }
+                return false;
+              })
+              .map((attribute) => attribute.name.toLowerCase())
+          ),
+        [...DOUYIN_FIXED_UI_TEXT]
       );
       assert.deepEqual(invalidAttributes, [], fixtureFile);
 
