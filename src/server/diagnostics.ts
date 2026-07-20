@@ -76,7 +76,7 @@ function isDiagnosticRecord(value: Partial<DiagnosticRecord>): value is Diagnost
     typeof value.platform === "string" &&
     typeof value.videoId === "string" &&
     typeof value.filename === "string" &&
-    (value.status === "ok" || value.status === "error") &&
+    (value.status === "ok" || value.status === "partial" || value.status === "error") &&
     typeof value.elapsedMs === "number" &&
     typeof value.filePath === "string"
   );

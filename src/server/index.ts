@@ -11,6 +11,8 @@ import { getEnvironmentReport } from "./environment.js";
 import { DraftGenerator } from "./openai.js";
 import { resolvePublishAccount } from "./publish-account.js";
 import { ADAPTER_VERSIONS, Publisher } from "./publisher.js";
+import { PublishAccountBusyError } from "./publish/account-lock.js";
+import { mapPublishOutcome, normalizePublishOutcome } from "./publish/result-mapping.js";
 import { VideoScanner } from "./scanner.js";
 import { Store } from "./store.js";
 import {
@@ -305,14 +307,15 @@ app.post("/api/videos/:id/posts/:platform/open", async (req, res) => {
   try {
     const started = Date.now();
     const result = await publisher.open(platform, account.id, video.filePath, post, selectCovers(video), setProgress);
+    const outcome = normalizePublishOutcome(platform, ADAPTER_VERSIONS[platform], result);
+    const mapped = mapPublishOutcome(outcome);
     console.log("[publisher:result]", platform, result);
-    setProgress(
-      result.browserMode === "manual"
-        ? "\u4eba\u5de5\u53d1\u5e03\u6750\u6599\u5df2\u51c6\u5907\uff0c\u6b63\u5728\u5237\u65b0\u4efb\u52a1\u72b6\u6001"
-        : "\u81ea\u52a8\u64cd\u4f5c\u5b8c\u6210\uff0c\u6b63\u5728\u5237\u65b0\u4efb\u52a1\u72b6\u6001"
-    );
-    const updated = await store.updatePost(video.id, platform, { status: "opened", lastError: null });
-    await store.updateVideo(video.id, { status: "opened" });
+    setProgress(`${mapped.progressLabel}\uff0c\u6b63\u5728\u5237\u65b0\u4efb\u52a1\u72b6\u6001`);
+    const updated = await store.updatePost(video.id, platform, {
+      status: mapped.postStatus,
+      lastError: mapped.postStatus === "failed" ? mapped.progressLabel : null
+    });
+    await store.updateVideo(video.id, { status: mapped.videoStatus });
     await diagnostics.write({
       createdAt: new Date().toISOString(),
       platform,
@@ -320,17 +323,23 @@ app.post("/api/videos/:id/posts/:platform/open", async (req, res) => {
       accountName: account.name,
       videoId: video.id,
       filename: video.filename,
-      status: "ok",
+      status: mapped.diagnosticStatus,
       elapsedMs: Date.now() - started,
-      adapterVersion: ADAPTER_VERSIONS[platform],
+      adapterVersion: outcome.adapterVersion,
       startedAt,
       completedAt: new Date().toISOString(),
       progress: progressHistory,
-      result
+      result: outcome
     });
-    setProgress(result.browserMode === "manual" ? "\u4eba\u5de5\u53d1\u5e03\u6750\u6599\u5df2\u51c6\u5907" : "\u81ea\u52a8\u64cd\u4f5c\u5b8c\u6210", false);
-    res.json({ result, video: updated });
+    setProgress(mapped.progressLabel, false);
+    res.status(mapped.httpStatus).json({ result: { ...result, ...outcome }, video: updated });
   } catch (error) {
+    if (error instanceof PublishAccountBusyError) {
+      const message = "\u8be5\u8d26\u53f7\u5df2\u6709\u53d1\u5e03\u4efb\u52a1\u6b63\u5728\u8fd0\u884c";
+      setProgress(message, false);
+      res.status(409).json({ code: error.code, error: message });
+      return;
+    }
     const message = error instanceof Error ? error.message : "\u672a\u77e5\u9519\u8bef";
     setProgress(`\u53d1\u5e03\u8f85\u52a9\u5931\u8d25\uff1a${message}`, false);
     await diagnostics.write({

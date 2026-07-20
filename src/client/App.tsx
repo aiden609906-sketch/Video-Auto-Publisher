@@ -28,6 +28,7 @@ import {
   type DiagnosticSummary,
   type EnvironmentReport,
   type Platform,
+  type PublishOutcome,
   type VideoTask
 } from "../shared/types";
 import { resolveSelectedVideoId } from "./selection";
@@ -38,6 +39,34 @@ type PublishProgress = {
   stage: string;
   startedAt: string;
   updatedAt: string;
+};
+type LegacyPublishResult = {
+  browserMode: "managed" | "manual";
+  copied: boolean;
+  loginRequired: boolean;
+  uploadPrefilled: boolean;
+  titlePrefilled: boolean;
+  bodyPrefilled: boolean;
+  tagsPrefilled: boolean;
+  coverPrefilled: boolean;
+  declarationPrefilled: boolean;
+};
+
+const publishStageLabels: Record<PublishOutcome["stages"][number]["stage"], string> = {
+  page: "发布页面",
+  video: "视频",
+  title: "标题",
+  body: "正文",
+  topics: "话题",
+  cover: "封面",
+  declaration: "作者声明",
+  ready: "发布前就绪状态"
+};
+
+const publishStageStatusLabels: Record<PublishOutcome["stages"][number]["status"], string> = {
+  succeeded: "成功",
+  skipped: "已跳过",
+  failed: "失败"
 };
 
 const aiProviderPresets: Record<AiProvider, { label: string; baseURL: string; model: string }> = {
@@ -255,7 +284,7 @@ export function App() {
                 {diagnostics.slice(0, 3).map((item) => (
                   <a href={`/api/diagnostics/${item.id}/file`} key={item.id} target="_blank" rel="noreferrer">
                     <Download size={14} />
-                    {PLATFORM_LABELS[item.platform]} · {item.status === "ok" ? "成功" : "失败"} · {(item.elapsedMs / 1000).toFixed(1)}s
+                    {PLATFORM_LABELS[item.platform]} · {item.status === "ok" ? "成功" : item.status === "partial" ? "部分完成" : "失败"} · {(item.elapsedMs / 1000).toFixed(1)}s
                   </a>
                 ))}
               </div>
@@ -777,24 +806,29 @@ export function App() {
     await run(
       `${postId}-open`,
       async () => {
-        const response = await api<{
-          result: {
-            browserMode: "managed" | "manual";
-            copied: boolean;
-            loginRequired: boolean;
-            uploadPrefilled: boolean;
-            titlePrefilled: boolean;
-            bodyPrefilled: boolean;
-            tagsPrefilled: boolean;
-            coverPrefilled: boolean;
-            declarationPrefilled: boolean;
-          };
-        }>(`/api/videos/${videoId}/posts/${platform}/open`, {
+        const response = await api<{ result: PublishOutcome | LegacyPublishResult }>(`/api/videos/${videoId}/posts/${platform}/open`, {
           method: "POST",
           body: JSON.stringify({ accountId })
         });
         const result = response.result;
-        if (result.loginRequired) {
+        if ("stages" in result) {
+          if (result.status === "login_required") {
+            setNotice({ type: "error", text: "请先在打开的浏览器中登录该平台，登录完成后再点一次打开发布" });
+          } else if (result.browserMode === "manual") {
+            setNotice({
+              type: result.status === "complete" ? "ok" : "error",
+              text: "小红书人工发布材料已准备：已复制文案，并用当前账号的独立浏览器窗口打开发布页和素材文件夹，请在网页里手动选择视频/封面后发布"
+            });
+          } else {
+            const stageDetails = result.stages.map(
+              (stage) => `${publishStageLabels[stage.stage]}：${publishStageStatusLabels[stage.status]}（${stage.detail}）`
+            );
+            setNotice({
+              type: result.status === "partial" || result.status === "failed" ? "error" : "ok",
+              text: stageDetails.join("；") || (result.status === "complete" ? "自动填写完成" : "自动填写未完成")
+            });
+          }
+        } else if (result.loginRequired) {
           setNotice({ type: "error", text: "请先在打开的浏览器中登录该平台，登录完成后再点一次打开发布" });
         } else if (result.browserMode === "manual") {
           setNotice({

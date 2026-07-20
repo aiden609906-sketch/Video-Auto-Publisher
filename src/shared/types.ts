@@ -148,7 +148,7 @@ export interface DiagnosticSummary {
   platform: Platform;
   videoId: string;
   filename: string;
-  status: "ok" | "error";
+  status: "ok" | "partial" | "error";
   elapsedMs: number;
   filePath: string;
 }
