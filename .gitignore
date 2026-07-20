@@ -6,6 +6,7 @@ data/
 temp/
 diagnostics/
 .worktrees/
+.superpowers/
 runtime/
 交付包/
 卖点宣传/
