@@ -484,11 +484,12 @@ Use the existing local browser profile. Upload the designated test video only if
 - form-ready
 - topic-picker-open
 - cover-editor-open
-- cover-uploading
 - cover-applied
 - declaration-modal-open
 - declaration-selected
 - ready-before-publish
+
+The real Douyin page does not expose a stable uploading DOM state. After initiating the cover upload, use a bounded wait and verify only the `cover-applied` terminal state; do not replay or select loading/spinner classes, transient text, or permanently mounted wrappers.
 
 Expected: each output is a small UTF-8 HTML file containing no account name, material title/body, URLs with tokens, Cookie, local absolute profile path, or image data.
 

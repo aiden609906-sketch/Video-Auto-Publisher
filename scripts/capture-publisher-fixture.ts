@@ -1,6 +1,6 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium, type Page } from "playwright-core";
 
 const DEFAULT_ALLOWED_UI_TEXT = [
@@ -27,6 +27,7 @@ export async function captureSanitizedFixture(
       const removableSelector = [
         "script",
         "style",
+        "template",
         "img",
         "video",
         "source",
@@ -118,6 +119,29 @@ type CaptureCliConfig = {
   timeoutMs?: number;
 };
 
+const EXPECTED_FIXTURE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "tests", "fixtures", "publisher", "douyin");
+
+function pathsMatch(left: string, right: string) {
+  return path.relative(left, right) === "" && path.relative(right, left) === "";
+}
+
+export async function resolveFixtureOutputPath(fixtureDir: string, fixtureName: string) {
+  if (!fixtureDir.trim() || !/^[a-z0-9][a-z0-9-]*$/i.test(fixtureName)) throw new Error("invalid fixture output");
+  const requestedRoot = path.resolve(fixtureDir);
+  if (!pathsMatch(requestedRoot, EXPECTED_FIXTURE_ROOT)) throw new Error("invalid fixture output");
+
+  const [requestedRealRoot, expectedRealRoot] = await Promise.all([realpath(requestedRoot), realpath(EXPECTED_FIXTURE_ROOT)]);
+  if (!pathsMatch(requestedRealRoot, expectedRealRoot)) throw new Error("invalid fixture output");
+
+  const outputFile = path.join(requestedRoot, `${fixtureName}.html`);
+  const outputMetadata = await lstat(outputFile).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (outputMetadata?.isSymbolicLink()) throw new Error("invalid fixture output");
+  return outputFile;
+}
+
 function parseCliConfig(value: unknown): CaptureCliConfig {
   if (!value || typeof value !== "object") throw new Error("invalid config");
   const config = value as Record<string, unknown>;
@@ -139,8 +163,8 @@ function parseCliConfig(value: unknown): CaptureCliConfig {
 async function runCli(configFile: string | undefined) {
   if (!configFile) throw new Error("missing config");
   const config = parseCliConfig(JSON.parse(await readFile(path.resolve(configFile), "utf8")));
-  const fixtureDir = path.resolve(config.fixtureDir);
-  const outputFile = path.join(fixtureDir, `${config.fixtureName}.html`);
+  const outputFile = await resolveFixtureOutputPath(config.fixtureDir, config.fixtureName);
+  const fixtureDir = path.dirname(outputFile);
   const context = await chromium.launchPersistentContext(path.resolve(config.profileDir), {
     channel: config.channel || "msedge",
     headless: config.headless ?? false,
