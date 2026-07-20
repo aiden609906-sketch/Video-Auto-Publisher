@@ -666,7 +666,7 @@ test("douyin page succeeds only when one visible creator form is owned by the ad
     const adapter = new DouyinAdapter(page);
     const result = await adapter.runStage("page", makeInput());
 
-    assert.equal(adapter.version, "2026.07.20-v3-state-machine-3");
+    assert.equal(adapter.version, "2026.07.20-v3-state-machine-4");
     assert.equal(result.status, "succeeded", result.detail);
     assert.equal(result.evidence?.formCount, 1);
   } finally {
@@ -823,6 +823,38 @@ test("douyin video accepts the current sanitized post-upload form after the uplo
     const result = await new DouyinAdapter(page).runStage("video", makeInput({ filePath: videoPath }));
 
     assert.equal(result.status, "succeeded", `video-ready-form postcondition: ${result.detail}`);
+    assert.equal(result.evidence?.uploadEntryDisconnected, true);
+    assert.equal(result.evidence?.uploadTerminal, "entry-exited");
+  } finally {
+    await page.close();
+    await rm(tempDir, { recursive: true });
+  }
+});
+
+test("douyin video accepts the exact current post-upload editor route", async () => {
+  const page = await fixturePage(browser, "upload-entry-current.html");
+  const tempDir = await mkdtemp(path.join(tmpdir(), "publisher-video-"));
+  const videoPath = path.join(tempDir, "video.mp4");
+  await writeFile(videoPath, "safe-video-fixture");
+  try {
+    page.setDefaultTimeout(500);
+    const postUpload = await readFile(path.join(FIXTURE_DIR, "video-post-upload-current.html"), "utf8");
+    await page.evaluate((postUpload) => {
+      const root = document.querySelector(".container-drag-VAfIfu");
+      const upload = root?.querySelector('input[type="file"]');
+      if (!root || !upload) throw new Error("captured upload entry is incomplete");
+      upload.addEventListener("change", () => setTimeout(() => {
+        history.replaceState({}, "", "/creator-micro/content/post/video");
+        const parsed = new DOMParser().parseFromString(postUpload, "text/html");
+        const form = parsed.body.firstElementChild;
+        if (!form) throw new Error("captured post-upload form is incomplete");
+        root.replaceWith(form);
+      }, 0));
+    }, postUpload);
+
+    const result = await new DouyinAdapter(page).runStage("video", makeInput({ filePath: videoPath }));
+
+    assert.equal(result.status, "succeeded", `exact post-upload editor route: ${result.detail}`);
     assert.equal(result.evidence?.uploadEntryDisconnected, true);
     assert.equal(result.evidence?.uploadTerminal, "entry-exited");
   } finally {

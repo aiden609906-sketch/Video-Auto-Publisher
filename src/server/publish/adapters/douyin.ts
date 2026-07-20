@@ -75,7 +75,7 @@ export type DouyinAdapterCallbacks = {
   onStageResult?: (result: StageResult) => void;
 };
 
-export const DOUYIN_ADAPTER_VERSION = "2026.07.20-v3-state-machine-3";
+export const DOUYIN_ADAPTER_VERSION = "2026.07.20-v3-state-machine-4";
 
 export class DouyinAdapter implements PlatformAdapter {
   readonly platform = "douyin" as const;
@@ -870,7 +870,8 @@ export class DouyinAdapter implements PlatformAdapter {
           url.protocol === "https:" &&
           url.hostname === "creator.douyin.com" &&
           (url.pathname === "/creator-micro/content/upload" ||
-            url.pathname === "/creator-micro/content/upload/"),
+            url.pathname === "/creator-micro/content/upload/" ||
+            url.pathname === "/creator-micro/content/post/video"),
         loginRequired
       };
     } catch {
