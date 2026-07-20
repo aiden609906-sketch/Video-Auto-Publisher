@@ -674,6 +674,51 @@ test("douyin page succeeds only when one visible creator form is owned by the ad
   }
 });
 
+test("douyin title route guard stops mutation after the page leaves the approved creator path", async () => {
+  const page = await fixturePage(browser, "form-ready.html");
+  try {
+    const adapter = new DouyinAdapter(page);
+    assert.equal((await adapter.runStage("page", makeInput())).status, "succeeded");
+    await page.evaluate(() => history.replaceState({}, "", "/creator-micro/content/not-upload"));
+
+    const result = await adapter.runStage("title", makeInput());
+
+    assert.equal(result.status, "failed");
+    assert.match(result.detail, /operation=title-fill/);
+    assert.match(result.detail, /category=route/);
+    assert.equal(await page.locator('.form-container-MDtobK .editor-kit-root-container input[type="text"]').inputValue(), "");
+    assert.doesNotMatch(result.detail, /not-upload|normalized title|creator\.douyin\.com/i);
+  } finally {
+    await page.close();
+  }
+});
+
+test("douyin video route guard prevents file submission after the page becomes login-required", async () => {
+  const page = await htmlPage(
+    browser,
+    '<div class="semi-upload" style="padding:10px"><input type="file" accept="video/mp4"></div>'
+  );
+  const tempDir = await mkdtemp(path.join(tmpdir(), "publisher-video-"));
+  const videoPath = path.join(tempDir, "private-video.mp4");
+  await writeFile(videoPath, "safe-video-fixture");
+  try {
+    const adapter = new DouyinAdapter(page);
+    assert.equal((await adapter.runStage("page", makeInput())).status, "succeeded");
+    await page.evaluate(() => history.replaceState({}, "", "/login"));
+
+    const result = await adapter.runStage("video", makeInput({ filePath: videoPath }));
+
+    assert.equal(result.status, "failed");
+    assert.match(result.detail, /operation=video-set-file/);
+    assert.match(result.detail, /category=route/);
+    assert.equal(await page.locator('.semi-upload > input[type="file"]').evaluate((input: HTMLInputElement) => input.files?.length), 0);
+    assert.doesNotMatch(result.detail, /private-video|publisher-video-|\/login|\.mp4/i);
+  } finally {
+    await page.close();
+    await rm(tempDir, { recursive: true });
+  }
+});
+
 test("douyin video fails closed when an existing creator form cannot prove the current video", async () => {
   const page = await fixturePage(browser, "form-ready.html");
   try {
@@ -724,6 +769,93 @@ test("douyin video submits the scoped input and verifies a safe file digest befo
     assert.ok(Number(result.evidence?.stableFormReads) >= 2);
     assert.ok(Number(result.evidence?.stableFormMs) >= 400);
     assert.doesNotMatch(JSON.stringify(result), /private-video-name|publisher-video-|\.mp4/i);
+  } finally {
+    await page.close();
+    await rm(tempDir, { recursive: true });
+  }
+});
+
+test("douyin video does not succeed while scoped upload progress remains active", async () => {
+  const page = await htmlPage(
+    browser,
+    '<div class="semi-upload" style="padding:10px"><input type="file" accept="video/mp4"></div>'
+  );
+  const tempDir = await mkdtemp(path.join(tmpdir(), "publisher-video-"));
+  const videoPath = path.join(tempDir, "video.mp4");
+  await writeFile(videoPath, "safe-video-fixture");
+  try {
+    await page.evaluate(() => {
+      const root = document.querySelector(".semi-upload");
+      const upload = root?.querySelector('input[type="file"]');
+      if (!root || !upload) throw new Error("video fixture controls missing");
+      upload.addEventListener("change", () => setTimeout(() => {
+        const form = document.createElement("div");
+        form.className = "form-container-MDtobK";
+        form.style.padding = "10px";
+        form.innerHTML = '<div aria-busy="true"><div role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="20" style="display:block;width:20px;height:8px"></div><div role="status" aria-busy="true">private processing text</div></div>';
+        root.replaceWith(form);
+        const progress = form.querySelector<HTMLElement>('[role="progressbar"]')!;
+        const status = form.querySelector<HTMLElement>('[role="status"]')!;
+        setTimeout(() => {
+          progress.setAttribute("aria-valuenow", "45");
+          progress.style.width = "45px";
+          status.textContent = "different private progress text";
+        }, 200);
+        setTimeout(() => {
+          progress.setAttribute("aria-valuenow", "70");
+          progress.style.width = "70px";
+        }, 450);
+        setTimeout(() => history.replaceState({}, "", "/login"), 900);
+      }, 100));
+    });
+
+    const result = await new DouyinAdapter(page).runStage("video", makeInput({ filePath: videoPath }));
+
+    assert.equal(result.status, "failed");
+    assert.notEqual(result.evidence?.uploadTerminal, "entry-exited");
+  } finally {
+    await page.close();
+    await rm(tempDir, { recursive: true });
+  }
+});
+
+test("douyin video succeeds after scoped busy progress becomes explicitly complete", async () => {
+  const page = await htmlPage(
+    browser,
+    '<div class="semi-upload" style="padding:10px"><input type="file" accept="video/mp4"></div>'
+  );
+  const tempDir = await mkdtemp(path.join(tmpdir(), "publisher-video-"));
+  const videoPath = path.join(tempDir, "video.mp4");
+  await writeFile(videoPath, "safe-video-fixture");
+  try {
+    await page.evaluate(() => {
+      const root = document.querySelector(".semi-upload");
+      const upload = root?.querySelector('input[type="file"]');
+      if (!root || !upload) throw new Error("video fixture controls missing");
+      upload.addEventListener("change", () => setTimeout(() => {
+        const form = document.createElement("div");
+        form.className = "form-container-MDtobK";
+        form.style.padding = "10px";
+        form.innerHTML = '<div aria-busy="true"><div role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="25" style="display:block;width:25px;height:8px"></div><div role="status" aria-busy="true">private processing text</div></div>';
+        root.replaceWith(form);
+        setTimeout(() => {
+          form.querySelector('[aria-busy="true"]')?.setAttribute("aria-busy", "false");
+          const status = form.querySelector('[role="status"]');
+          status?.setAttribute("aria-busy", "false");
+          const progress = form.querySelector<HTMLElement>('[role="progressbar"]');
+          progress?.setAttribute("aria-valuenow", "100");
+          if (progress) progress.style.width = "100px";
+        }, 500);
+      }, 100));
+    });
+
+    const result = await new DouyinAdapter(page).runStage("video", makeInput({ filePath: videoPath }));
+
+    assert.equal(result.status, "succeeded", result.detail);
+    assert.equal(result.evidence?.uploadBusyObserved, true);
+    assert.equal(result.evidence?.uploadActive, false);
+    assert.equal(result.evidence?.uploadTerminal, "busy-cleared");
+    assert.equal(result.evidence?.uploadError, false);
   } finally {
     await page.close();
     await rm(tempDir, { recursive: true });
@@ -910,6 +1042,24 @@ test("douyin stage result callback failures do not replace or reject the stage r
     const result = await adapter.runStage("body", makeInput());
 
     assert.equal(result.status, "succeeded", result.detail);
+  } finally {
+    await page.close();
+  }
+});
+
+test("douyin stage start callback failures do not prevent the real stage mutation", async () => {
+  const page = await fixturePage(browser, "form-ready.html");
+  try {
+    const adapter = new DouyinAdapter(page, {
+      onStageStart: () => {
+        throw new Error("observer failure");
+      }
+    });
+
+    const result = await adapter.runStage("body", makeInput());
+
+    assert.equal(result.status, "succeeded", result.detail);
+    assert.equal(await page.locator('.form-container-MDtobK [data-slate-editor]').innerText(), "first line\nsecond line");
   } finally {
     await page.close();
   }

@@ -10,7 +10,15 @@ type ConditionObservation = {
   safeState: Record<string, string | number | boolean>;
 };
 
-type SafeErrorCategory = "timeout" | "strict" | "detached" | "io" | "evaluate" | "action";
+type VideoUploadState = {
+  uploadActive: boolean;
+  uploadError: boolean;
+  visibleProgressCount: number;
+  maxProgressPercent: number;
+  completionSignal: boolean;
+};
+
+type SafeErrorCategory = "timeout" | "strict" | "detached" | "io" | "evaluate" | "action" | "route";
 type OperationAlias =
   | "run-stage"
   | "page-read"
@@ -24,6 +32,7 @@ type OperationAlias =
   | "video-read-file"
   | "video-read-source"
   | "video-read-signature"
+  | "video-read-status"
   | "cover-read-signature"
   | "cover-set-file"
   | "cover-click"
@@ -82,6 +91,10 @@ export class DouyinAdapter implements PlatformAdapter {
     let result: StageResult;
     try {
       this.callbacks.onStageStart?.(stage);
+    } catch {
+      // Start observers are deliberately isolated from the real stage mutation.
+    }
+    try {
       switch (stage) {
         case "page":
           result = await this.safeOperation("page-read", "creator-page", () => this.ensurePage(input));
@@ -144,10 +157,16 @@ export class DouyinAdapter implements PlatformAdapter {
     const inputToken = createHash("sha256").update(input.filePath).digest("hex");
     if (this.verifiedVideo?.inputToken === inputToken) {
       const sourceContentDigest = await this.videoSourceContentDigest(input.filePath);
+      const uploadState = (await form.count()) === 1
+        ? await this.readVideoUploadState(form)
+        : null;
       if (
         sourceContentDigest === this.verifiedVideo.sourceContentDigest &&
         (await form.count()) === 1 &&
-        (await form.isVisible())
+        (await form.isVisible()) &&
+        uploadState !== null &&
+        !uploadState.uploadActive &&
+        !uploadState.uploadError
       ) {
         return {
           stage: "video",
@@ -163,6 +182,7 @@ export class DouyinAdapter implements PlatformAdapter {
       }
     }
 
+    this.assertCreatorRoute("video-set-file", "video-upload-input");
     const uploadRoot = this.page.locator('.semi-upload:has(> input[type="file"][accept*="video" i])');
     const uploadRootCount = await uploadRoot.count();
     if (uploadRootCount !== 1 || !(await uploadRoot.isVisible())) {
@@ -182,12 +202,17 @@ export class DouyinAdapter implements PlatformAdapter {
         evidence: { uploadSubmitted: false, videoInputCount: await videoInput.count() }
       };
     }
+    const uploadRootHandle = await uploadRoot.elementHandle();
+    if (!uploadRootHandle) {
+      return { stage: "video", status: "failed", detail: "video upload root handle was unavailable" };
+    }
     const beforeUploadSignature = await this.contentSignature(
       uploadRoot,
       "video-read-signature",
       "video-upload-root",
       true
     );
+    this.assertCreatorRoute("video-set-file", "video-upload-input");
     await this.safeOperation("video-set-file", "video-upload-input", () => videoInput.setInputFiles(input.filePath));
     const fileState = await this.safeOperation("video-read-file", "video-upload-input", () => videoInput.evaluate(async (element) => {
       const input = element as HTMLInputElement;
@@ -231,11 +256,17 @@ export class DouyinAdapter implements PlatformAdapter {
     let stableFormHandle = await form.elementHandle();
     let stableFormSignature = "";
     let stableFormSince = 0;
+    let uploadBusyObserved = false;
     const result = await this.waitForCondition("video", 75_000, async () => {
       const formCount = await form.count();
       const formReady = formCount === 1 && (await form.isVisible());
       let sameFormNode = false;
       let formSignatureStable = false;
+      let uploadActive = false;
+      let uploadError = false;
+      let visibleProgressCount = 0;
+      let maxProgressPercent = 0;
+      let completionSignal = false;
       if (formReady) {
         const currentHandle = await form.elementHandle();
         const currentSignature = await this.contentSignature(
@@ -258,6 +289,13 @@ export class DouyinAdapter implements PlatformAdapter {
           stableFormReads = 1;
           stableFormSince = Date.now();
         }
+        const uploadState = await this.readVideoUploadState(form);
+        uploadActive = uploadState.uploadActive;
+        uploadError = uploadState.uploadError;
+        visibleProgressCount = uploadState.visibleProgressCount;
+        maxProgressPercent = uploadState.maxProgressPercent;
+        completionSignal = uploadState.completionSignal;
+        uploadBusyObserved ||= uploadActive;
       } else {
         stableFormHandle = null;
         stableFormSignature = "";
@@ -265,8 +303,17 @@ export class DouyinAdapter implements PlatformAdapter {
         stableFormSince = 0;
       }
       const stableFormMs = stableFormSince ? Date.now() - stableFormSince : 0;
+      const uploadEntryDisconnected = !(await uploadRootHandle.evaluate((element) => element.isConnected));
+      const stableForm = stableFormReads >= 2 && stableFormMs >= 400;
+      const uploadTerminal = stableForm && !uploadActive && !uploadError
+        ? uploadBusyObserved && completionSignal
+          ? "busy-cleared"
+          : uploadEntryDisconnected
+            ? "entry-exited"
+            : "pending"
+        : "pending";
       return {
-        matched: uploadSignatureChanged && stableFormReads >= 2 && stableFormMs >= 400,
+        matched: uploadSignatureChanged && uploadTerminal !== "pending",
         safeState: {
           formCount,
           formReady,
@@ -276,6 +323,13 @@ export class DouyinAdapter implements PlatformAdapter {
           stableFormMs,
           sameFormNode,
           formSignatureStable,
+          uploadEntryDisconnected,
+          uploadBusyObserved,
+          uploadActive,
+          uploadError,
+          visibleProgressCount,
+          maxProgressPercent,
+          uploadTerminal,
           safeFileDigest: fileState.digest
         }
       };
@@ -305,6 +359,7 @@ export class DouyinAdapter implements PlatformAdapter {
       return { stage: "title", status: "failed", detail: "title input count did not equal one" };
     }
 
+    this.assertCreatorRoute("title-fill", "title-input");
     await this.safeOperation("title-fill", "title-input", () => titleInput.fill(input.post.title));
     return this.waitForCondition("title", 2_000, async () => {
       const actual = await this.safeOperation("title-read", "title-input", () => titleInput.inputValue());
@@ -325,7 +380,8 @@ export class DouyinAdapter implements PlatformAdapter {
       return { stage: "body", status: "failed", detail: "body editor count did not equal one" };
     }
 
-    await editor.evaluate((element, text) => {
+    this.assertCreatorRoute("body-operation", "body-editor");
+    await this.safeOperation("body-operation", "body-editor", () => editor.evaluate((element, text) => {
       element.replaceChildren(...text.split("\n").flatMap((line, index) => {
         const nodes: Node[] = [];
         if (index > 0) nodes.push(document.createElement("br"));
@@ -334,7 +390,7 @@ export class DouyinAdapter implements PlatformAdapter {
       }));
       element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
       element.dispatchEvent(new Event("change", { bubbles: true }));
-    }, input.post.body);
+    }, input.post.body));
 
     return this.waitForCondition("body", 2_000, async () => {
       const actual = normalizeEditorText(await editor.innerText());
@@ -355,9 +411,12 @@ export class DouyinAdapter implements PlatformAdapter {
       if ((await editor.count()) !== 1) {
         return { stage: "topics", status: "failed", detail: "topic editor count did not equal one" };
       }
-      await editor.click();
-      await this.page.keyboard.press("End");
-      await this.page.keyboard.insertText(` #${topic}`);
+      this.assertCreatorRoute("topic-click", "topics-editor");
+      await this.safeOperation("topic-click", "topics-editor", () => editor.click());
+      this.assertCreatorRoute("topics-operation", "topics-editor");
+      await this.safeOperation("topics-operation", "topics-editor", () => this.page.keyboard.press("End"));
+      this.assertCreatorRoute("topics-operation", "topics-editor");
+      await this.safeOperation("topics-operation", "topics-editor", () => this.page.keyboard.insertText(` #${topic}`));
 
       const suggestionReady = await this.waitForCondition("topics", 2_000, async () => {
         const suggestion = await this.findExactTopicSuggestion(topic);
@@ -368,6 +427,7 @@ export class DouyinAdapter implements PlatformAdapter {
       if (!suggestion) {
         return { stage: "topics", status: "failed", detail: "expected scoped topic suggestion was not unique" };
       }
+      this.assertCreatorRoute("topic-click", "topic-suggestion");
       await this.safeOperation("topic-click", "topic-suggestion", () => suggestion.click());
     }
 
@@ -414,6 +474,7 @@ export class DouyinAdapter implements PlatformAdapter {
       if ((await target.count()) !== 1 || !(await target.isVisible())) {
         return { stage: "cover", status: "failed", detail: "cover editor trigger was not unique and visible" };
       }
+      this.assertCreatorRoute("cover-click", "cover-trigger");
       await this.safeOperation("cover-click", "cover-trigger", () => target.click());
       const opened = await this.waitForCondition("cover", 2_000, async () => {
         const count = await dialog.count();
@@ -435,6 +496,7 @@ export class DouyinAdapter implements PlatformAdapter {
     if ((await uploadInput.count()) !== 1) {
       return { stage: "cover", status: "failed", detail: "cover upload input count did not equal one" };
     }
+    this.assertCreatorRoute("cover-set-file", "cover-upload-input");
     await this.safeOperation("cover-set-file", "cover-upload-input", () => uploadInput.setInputFiles(coverPath));
 
     const applied = await this.waitForCondition("cover", 4_000, async () => {
@@ -453,6 +515,7 @@ export class DouyinAdapter implements PlatformAdapter {
     if ((await complete.count()) !== 1 || !(await complete.isVisible()) || !(await complete.isEnabled())) {
       return { stage: "cover", status: "failed", detail: "cover complete control was not uniquely actionable" };
     }
+    this.assertCreatorRoute("cover-click", "cover-complete");
     await this.safeOperation("cover-click", "cover-complete", () => complete.click());
 
     return this.waitForCondition("cover", 4_000, async () => {
@@ -467,6 +530,75 @@ export class DouyinAdapter implements PlatformAdapter {
         safeState: { coverDialogCount: dialogCount, mainCoverCount: mainCount, uploadSignatureChanged: signatureChanged }
       };
     });
+  }
+
+  private async readVideoUploadState(form: Locator): Promise<VideoUploadState> {
+    return this.safeOperation("video-read-status", "video-ready-form", () => form.evaluate((root) => {
+      let visibleBusyCount = 0;
+      let visibleInactiveBusyCount = 0;
+      let visibleProgressCount = 0;
+      let visibleErrorCount = 0;
+      let activeProgressCount = 0;
+      let completeProgressCount = 0;
+      let maxProgressPercent = 0;
+      const candidates = [
+        root,
+        ...Array.from(root.querySelectorAll(
+          '[aria-busy], [role="progressbar"], [role="alert"], [aria-invalid="true"], [data-status="error"]'
+        ))
+      ];
+      for (const element of candidates) {
+        let current: Element | null = element;
+        let elementVisible = true;
+        while (current) {
+          const style = getComputedStyle(current);
+          if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) {
+            elementVisible = false;
+            break;
+          }
+          if (current === root) break;
+          current = current.parentElement;
+        }
+        const rectangle = element.getBoundingClientRect();
+        if (!elementVisible || rectangle.width <= 0 || rectangle.height <= 0) continue;
+        if (element.getAttribute("aria-busy") === "true") visibleBusyCount += 1;
+        if (element.getAttribute("aria-busy") === "false") visibleInactiveBusyCount += 1;
+        if (
+          element.getAttribute("role") === "alert" ||
+          element.getAttribute("aria-invalid") === "true" ||
+          element.getAttribute("data-status") === "error"
+        ) {
+          visibleErrorCount += 1;
+        }
+        if (element.getAttribute("role") === "progressbar") {
+          visibleProgressCount += 1;
+          const minimum = Number(element.getAttribute("aria-valuemin") ?? "0");
+          const maximum = Number(element.getAttribute("aria-valuemax") ?? "100");
+          const value = Number(element.getAttribute("aria-valuenow"));
+          if (!Number.isFinite(value) || !Number.isFinite(maximum) || maximum <= minimum) {
+            activeProgressCount += 1;
+          } else {
+            const percent = Math.max(0, Math.min(100, ((value - minimum) / (maximum - minimum)) * 100));
+            maxProgressPercent = Math.max(maxProgressPercent, Math.round(percent));
+            if (percent >= 100) completeProgressCount += 1;
+            else activeProgressCount += 1;
+          }
+        }
+      }
+      const uploadActive = visibleBusyCount > 0 || activeProgressCount > 0;
+      const uploadError = visibleErrorCount > 0;
+      const completionSignal =
+        visibleInactiveBusyCount > 0 ||
+        completeProgressCount > 0 ||
+        (visibleBusyCount === 0 && visibleProgressCount === 0);
+      return {
+        uploadActive,
+        uploadError,
+        visibleProgressCount,
+        maxProgressPercent,
+        completionSignal
+      };
+    }));
   }
 
   private async contentSignature(
@@ -527,7 +659,8 @@ export class DouyinAdapter implements PlatformAdapter {
       if ((await control.count()) !== 1 || !(await control.isVisible())) {
         return { stage: "declaration", status: "failed", detail: "declaration control was not uniquely visible" };
       }
-      await control.click();
+      this.assertCreatorRoute("declaration-operation", "declaration-surface");
+      await this.safeOperation("declaration-operation", "declaration-surface", () => control.click());
       const opened = await this.waitForCondition("declaration", 2_000, async () => {
         const count = await modal.count();
         return { matched: count === 1 && (await modal.isVisible()), safeState: { declarationModalCount: count } };
@@ -542,7 +675,10 @@ export class DouyinAdapter implements PlatformAdapter {
     if (!aiLabel) {
       return { stage: "declaration", status: "failed", detail: "AI declaration radio was not unique" };
     }
-    if (!(await this.radioIsChecked(aiLabel))) await aiLabel.click();
+    if (!(await this.radioIsChecked(aiLabel))) {
+      this.assertCreatorRoute("declaration-operation", "declaration-surface");
+      await this.safeOperation("declaration-operation", "declaration-surface", () => aiLabel.click());
+    }
 
     const checked = await this.waitForCondition("declaration", 2_000, async () => {
       const currentAiLabel = await this.findAiDeclarationLabel(modal);
@@ -572,7 +708,8 @@ export class DouyinAdapter implements PlatformAdapter {
     ) {
       return { stage: "declaration", status: "failed", detail: "declaration confirmation was not uniquely actionable" };
     }
-    await confirmations[0].click();
+    this.assertCreatorRoute("declaration-operation", "declaration-surface");
+    await this.safeOperation("declaration-operation", "declaration-surface", () => confirmations[0].click());
 
     return this.waitForCondition("declaration", 2_000, async () => {
       const modalCount = await modal.count();
@@ -721,6 +858,13 @@ export class DouyinAdapter implements PlatformAdapter {
       };
     } catch {
       return { approvedPage: false, loginRequired: false };
+    }
+  }
+
+  private assertCreatorRoute(operation: OperationAlias, target: SelectorAlias): void {
+    const route = this.currentRouteState();
+    if (!route.approvedPage || route.loginRequired) {
+      throw new SafeAdapterError(operation, target, "route");
     }
   }
 
