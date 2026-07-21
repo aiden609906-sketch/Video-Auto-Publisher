@@ -311,6 +311,24 @@ test("kuaishou accepts a changed blob cover without waiting for CDN replacement"
   assert.equal(changed, true);
 });
 
+test("kuaishou confirmation delegates processing wait to the dialog-close verifier", async () => {
+  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
+  hooks.hasKuaishouCoverDialog = async () => true;
+  hooks.kuaishouCoverDialogPreviewSignature = async () => "blob:https://cp.kuaishou.com/uploaded-cover";
+  hooks.clickKuaishouCoverConfirmButton = async () => true;
+  const page = {
+    waitForTimeout: async () => {
+      throw new Error("confirmation click should not add a separate processing wait");
+    }
+  };
+
+  const confirmed = await (
+    hooks.confirmKuaishouCoverDialog as (page: unknown) => Promise<boolean>
+  )(page);
+
+  assert.equal(confirmed, true);
+});
+
 test("kuaishou cover upload waits for the uploaded preview before confirming", async () => {
   const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
   const calls: string[] = [];

@@ -1453,14 +1453,7 @@ export class Publisher {
   private async confirmKuaishouCoverDialog(page: Page) {
     if (!(await this.hasKuaishouCoverDialog(page))) return true;
     if (!(await this.kuaishouCoverDialogPreviewSignature(page))) return false;
-    if (!(await this.clickKuaishouCoverConfirmButton(page))) return false;
-
-    const started = Date.now();
-    while (Date.now() - started < 3_000) {
-      if (!(await this.hasKuaishouCoverDialog(page))) return true;
-      await page.waitForTimeout(300);
-    }
-    return false;
+    return this.clickKuaishouCoverConfirmButton(page);
   }
 
   private async clickKuaishouCoverConfirmButton(page: Page) {
