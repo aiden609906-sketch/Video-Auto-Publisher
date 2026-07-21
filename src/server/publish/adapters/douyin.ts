@@ -435,11 +435,12 @@ export class DouyinAdapter implements PlatformAdapter {
     }
     if (missingTopics.length > 0) {
       this.assertCreatorRoute("topics-operation", "topics-editor");
-      await this.safeOperation("topics-operation", "topics-editor", async () => {
-        await editor.click();
-        await this.page.keyboard.press("Control+End");
-        await this.page.keyboard.insertText(` ${missingTopics.map((topic) => `#${topic}`).join(" ")}`);
-      });
+      const suffix = ` ${missingTopics.map((topic) => `#${topic}`).join(" ")}`;
+      await this.safeOperation("topics-operation", "topics-editor", () => editor.evaluate((element, text) => {
+        element.append(document.createTextNode(text));
+        element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+        element.dispatchEvent(new Event("change", { bubbles: true }));
+      }, suffix));
     }
 
     const overlay = this.page.locator('.mention-suggest-item-container-TVOZMl');

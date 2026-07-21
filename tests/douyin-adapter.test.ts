@@ -149,6 +149,31 @@ test("douyin topics succeed when every expected topic is readable as plain text"
   }
 });
 
+test("douyin topics append atomically without letting the suggestion plugin rewrite the body", async () => {
+  const page = await fixturePage(browser, "form-ready.html");
+  const originalInsertText = page.keyboard.insertText.bind(page.keyboard);
+  Object.defineProperty(page.keyboard, "insertText", {
+    configurable: true,
+    value: async () => originalInsertText(" #阿里千问3.8 #ai逆袭 #开源正文最后一句。")
+  });
+  try {
+    await preparePlainTextTopicEditor(page);
+    const input = makeInput();
+    input.post.body = "正文最后一句。";
+    input.post.hashtags = ["阿里千问3.8", "AI逆袭", "开源模型", "硅谷vs中国", "效率工具"];
+    const adapter = new DouyinAdapter(page);
+    assert.equal((await adapter.runStage("body", input)).status, "succeeded");
+
+    const result = await adapter.runStage("topics", input);
+    const text = await page.locator('[data-publisher-fixture-scope] [data-slate-editor]').innerText();
+
+    assert.equal(result.status, "succeeded", result.detail);
+    assert.equal(text, "正文最后一句。 #阿里千问3.8 #ai逆袭 #开源模型 #硅谷vs中国 #效率工具");
+  } finally {
+    await page.close();
+  }
+});
+
 test("douyin topics succeed without interacting with the automatic picker", async () => {
   const page = await combinedFixturePage(browser, ["form-ready.html", "topic-picker-open.html"]);
   try {
@@ -192,13 +217,11 @@ test("douyin topics write at most five unique plain-text hashtags", async () => 
 
 test("douyin topics fail when an expected plain-text hashtag is not readable", async () => {
   const page = await fixturePage(browser, "form-ready.html");
-  const originalInsertText = page.keyboard.insertText.bind(page.keyboard);
-  Object.defineProperty(page.keyboard, "insertText", {
-    configurable: true,
-    value: async (text: string) => text.includes("topic-two") ? undefined : originalInsertText(text)
-  });
   try {
     await preparePlainTextTopicEditor(page);
+    await page.locator('[data-publisher-fixture-scope] [data-slate-editor]').evaluate((editor) => {
+      editor.addEventListener("input", () => editor.replaceChildren(document.createTextNode("body #topic-one")));
+    });
     const input = makeInput();
     input.post.hashtags = ["topic-one", "topic-two"];
 
@@ -207,7 +230,7 @@ test("douyin topics fail when an expected plain-text hashtag is not readable", a
     assert.equal(result.status, "failed");
     assert.deepEqual(result.evidence, {
       expectedTopics: 2,
-      writtenTopics: 0,
+      writtenTopics: 1,
       suggestionOverlayVisible: false
     });
   } finally {
