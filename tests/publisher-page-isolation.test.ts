@@ -72,6 +72,43 @@ test("publisher creates a dedicated workflow page instead of reusing an unrelate
   assert.equal(bringToFrontCalls, 1);
 });
 
+test("publisher reuses one platform page and closes duplicate blank and platform tabs", async () => {
+  const closed: string[] = [];
+  let bringToFrontCalls = 0;
+  let newPageCalls = 0;
+  const page = (id: string, url: string) => ({
+    id,
+    url: () => url,
+    close: async () => {
+      closed.push(id);
+    },
+    bringToFront: async () => {
+      bringToFrontCalls += 1;
+    }
+  });
+  const blankOne = page("blank-one", "about:blank");
+  const blankTwo = page("blank-two", "about:blank");
+  const oldDouyin = page("old-douyin", "https://creator.douyin.com/creator-micro/content/post/video");
+  const unrelated = page("unrelated", "https://example.com/keep");
+  const context = {
+    pages: () => [blankOne, blankTwo, oldDouyin, unrelated],
+    newPage: async () => {
+      newPageCalls += 1;
+      return page("new", "about:blank");
+    }
+  };
+
+  const acquiredPage = await createWorkflowPage(
+    context as never,
+    "https://creator.douyin.com/creator-micro/content/upload"
+  );
+
+  assert.equal(acquiredPage, oldDouyin);
+  assert.deepEqual(closed.sort(), ["blank-one", "blank-two"]);
+  assert.equal(newPageCalls, 0);
+  assert.equal(bringToFrontCalls, 1);
+});
+
 test("managed Publisher.open uses the dedicated workflow page", async () => {
   let unrelatedGotoCalls = 0;
   let createdGotoCalls = 0;

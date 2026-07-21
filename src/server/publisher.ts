@@ -165,7 +165,7 @@ export class Publisher {
     return this.accountLock.runExclusive(this.contextKey(platform, accountId), async () => {
       await this.copy(post);
       const context = await this.getContext(platform, accountId);
-      const page = await createWorkflowPage(context);
+      const page = await createWorkflowPage(context, PLATFORM_URLS[platform]);
       const removeFileChooserGuard = this.installFileChooserGuard(page, filePath, covers);
 
       try {
