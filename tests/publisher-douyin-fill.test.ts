@@ -52,6 +52,11 @@ test("Publisher.open delegates Douyin to the V3 workflow and derives legacy comp
     getContext: async () => context
   };
   const publisher = new Publisher("profiles", true, dependencies);
+  let legacyDouyinDeclarationCalls = 0;
+  (publisher as unknown as { trySelectAiDeclaration: () => Promise<boolean> }).trySelectAiDeclaration = async () => {
+    legacyDouyinDeclarationCalls += 1;
+    return true;
+  };
   const post = makeDouyinPost();
   post.hashtags = [];
   const tempDir = await mkdtemp(path.join(tmpdir(), "publisher-video-"));
@@ -81,6 +86,7 @@ test("Publisher.open delegates Douyin to the V3 workflow and derives legacy comp
     assert.equal(result.titlePrefilled, true);
     assert.equal(result.bodyPrefilled, true);
     assert.equal(result.declarationPrefilled, true);
+    assert.equal(legacyDouyinDeclarationCalls, 0);
     assert.equal(await context.pages()[0].locator("html").getAttribute("data-publish-clicked"), null);
   } finally {
     await context.close();
