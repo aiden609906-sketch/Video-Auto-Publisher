@@ -20,6 +20,16 @@ function makeBilibiliPost(accountId = "account-1"): PlatformPost {
   };
 }
 
+function makeKuaishouPost(accountId = "account-1"): PlatformPost {
+  return {
+    ...makeBilibiliPost(accountId),
+    platform: "kuaishou",
+    title: "kuaishou title",
+    body: "kuaishou body",
+    hashtags: ["topic"]
+  };
+}
+
 function stubManagedPublisher(
   context: { pages: () => unknown[]; newPage: () => Promise<unknown> },
   getContext: () => Promise<unknown> = async () => context
@@ -28,6 +38,7 @@ function stubManagedPublisher(
   hooks.copy = async () => undefined;
   hooks.getContext = getContext;
   hooks.installFileChooserGuard = () => () => undefined;
+  hooks.dismissKuaishouDraftPrompt = async () => undefined;
   hooks.resumeBilibiliDraftPrompt = async () => undefined;
   hooks.hasPublishingForm = async () => true;
   hooks.tryFillTitle = async () => true;
@@ -41,6 +52,13 @@ function stubManagedPublisher(
 
 function openBilibili(publisher: Publisher, accountId = "account-1") {
   return publisher.open("bilibili", accountId, "video.mp4", makeBilibiliPost(accountId), {
+    landscape: null,
+    portrait: null
+  });
+}
+
+function openKuaishou(publisher: Publisher, accountId = "account-1") {
+  return publisher.open("kuaishou", accountId, "video.mp4", makeKuaishouPost(accountId), {
     landscape: null,
     portrait: null
   });
@@ -138,6 +156,24 @@ test("managed Publisher.open uses the dedicated workflow page", async () => {
   assert.equal(newPageCalls, 1);
   assert.equal(createdGotoCalls, 1);
   assert.equal(unrelatedGotoCalls, 0);
+});
+
+test("kuaishou reports the title filled when the work description contains it", async () => {
+  const context = {
+    pages: () => [],
+    newPage: async () => ({
+      goto: async () => undefined,
+      bringToFront: async () => undefined
+    })
+  };
+  const publisher = stubManagedPublisher(context) as unknown as Record<string, unknown>;
+  publisher.tryFillTitle = async () => false;
+  publisher.tryFillBody = async () => true;
+
+  const result = await openKuaishou(publisher as unknown as Publisher);
+
+  assert.equal(result.titlePrefilled, true);
+  assert.equal(result.bodyPrefilled, true);
 });
 
 test("managed Publisher.open rejects a concurrent run for the same platform account", async () => {

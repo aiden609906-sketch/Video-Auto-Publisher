@@ -266,11 +266,12 @@ export class Publisher {
     }
 
     reportProgress("\u6b63\u5728\u586b\u5199\u6807\u9898");
-    const titlePrefilled = await this.tryFillTitle(page, platform, post.title);
+    const standaloneTitlePrefilled = await this.tryFillTitle(page, platform, post.title);
     reportProgress("\u6b63\u5728\u586b\u5199\u6b63\u6587\u548c\u8bdd\u9898");
     const platformHashtags = hashtagsForPlatform(platform, post.hashtags);
     const platformPost = { ...post, hashtags: platformHashtags };
     const bodyPrefilled = await this.tryFillBody(page, platform, platformPost);
+    const titlePrefilled = platform === "kuaishou" ? bodyPrefilled && Boolean(post.title.trim()) : standaloneTitlePrefilled;
     reportProgress("\u6b63\u5728\u5904\u7406\u5e73\u53f0\u72ec\u7acb\u8bdd\u9898\u8f93\u5165");
     const explicitTagsPrefilled = await this.tryFillTags(page, platform, platformHashtags);
     const tagsPrefilled = explicitTagsPrefilled || (bodyPrefilled && platformHashtags.length > 0);
@@ -441,7 +442,8 @@ export class Publisher {
 
   private async tryFillBody(page: Page, platform: Platform, post: PlatformPost, timeoutMs = platform === "douyin" ? 10_000 : 75_000) {
     const tags = hashtagsForPlatform(platform, post.hashtags).map((tag) => `#${tag}`).join(" ");
-    const body = [post.body.trim(), tags].filter(Boolean).join(platform === "douyin" ? " " : "\n");
+    const content = platform === "kuaishou" ? [post.title.trim(), post.body.trim(), tags] : [post.body.trim(), tags];
+    const body = content.filter(Boolean).join(platform === "douyin" ? " " : "\n");
     if (!body.trim()) return false;
     if (platform === "douyin") return this.tryFillDouyinBodyAndTopics(page, post, timeoutMs);
     return this.tryFillWithRetry(page, FIELD_SELECTORS[platform].body, body, "body", timeoutMs);

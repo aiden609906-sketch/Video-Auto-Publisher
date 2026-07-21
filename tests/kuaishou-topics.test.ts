@@ -42,5 +42,32 @@ test("kuaishou body receives only four topics", async () => {
   )({}, "kuaishou", post);
 
   assert.equal(result, true);
-  assert.equal(filled, "body\n#one #two #three #four");
+  assert.equal(filled, "title\nbody\n#one #two #three #four");
+});
+
+test("other platforms do not merge the title into the body", async () => {
+  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
+  let filled = "";
+  hooks.tryFillWithRetry = async (_page: unknown, _selectors: string[], value: string) => {
+    filled = value;
+    return true;
+  };
+  const post: PlatformPost = {
+    id: "post-1",
+    videoId: "video-1",
+    platform: "bilibili",
+    accountId: "default-bilibili",
+    enabled: true,
+    title: "title",
+    body: "body",
+    hashtags: ["topic"],
+    status: "ready",
+    lastError: null
+  };
+
+  await (
+    hooks.tryFillBody as (page: unknown, platform: string, post: PlatformPost) => Promise<boolean>
+  )({}, "bilibili", post);
+
+  assert.equal(filled, "body\n#topic");
 });
