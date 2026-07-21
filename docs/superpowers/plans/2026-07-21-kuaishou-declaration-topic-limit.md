@@ -215,3 +215,66 @@ Expected: TypeScript check passes, all tests pass, and `git diff --check` prints
 git add -- src/server/publisher.ts tests/kuaishou-ai-dom.test.ts tests/publisher-douyin-fill.test.ts
 git commit -m "fix: select kuaishou AI declaration exactly"
 ```
+
+### Task 3: Merge the Kuaishou title into the work description
+
+**Files:**
+- Modify: `src/server/publisher.ts:268-276,442-447`
+- Modify: `tests/kuaishou-topics.test.ts`
+- Modify: `tests/publisher-page-isolation.test.ts`
+
+**Interfaces:**
+- Consumes: the existing Kuaishou `PlatformPost` title, body, and platform-limited hashtags.
+- Produces: the work-description string `title\nbody\n#topic1 #topic2 #topic3 #topic4`; a successful Kuaishou body fill also produces `titlePrefilled: true`.
+
+- [ ] **Step 1: Write failing tests**
+
+Change the Kuaishou body assertion to:
+
+```ts
+assert.equal(filled, "title\nbody\n#one #two #three #four");
+```
+
+Add a non-Kuaishou assertion showing Bilibili still receives `body\n#topic`, not the title. Add a managed Kuaishou result test that stubs `tryFillTitle` to `false`, `tryFillBody` to `true`, and asserts the returned `titlePrefilled` and `bodyPrefilled` are both `true`.
+
+- [ ] **Step 2: Run the tests and verify RED**
+
+Run: `node --import tsx --test tests/kuaishou-topics.test.ts tests/publisher-page-isolation.test.ts`
+
+Expected: FAIL because the Kuaishou body omits the title and `titlePrefilled` remains false.
+
+- [ ] **Step 3: Implement the minimal Kuaishou-only behavior**
+
+In `tryFillBody`, build segments as follows:
+
+```ts
+const content = platform === "kuaishou" ? [post.title.trim(), post.body.trim(), tags] : [post.body.trim(), tags];
+const body = content.filter(Boolean).join(platform === "douyin" ? " " : "\n");
+```
+
+In the legacy publish flow, retain the standalone title attempt for other platforms and derive the Kuaishou title result after body filling:
+
+```ts
+const standaloneTitlePrefilled = await this.tryFillTitle(page, platform, post.title);
+const bodyPrefilled = await this.tryFillBody(page, platform, platformPost);
+const titlePrefilled = platform === "kuaishou" ? bodyPrefilled && Boolean(post.title.trim()) : standaloneTitlePrefilled;
+```
+
+- [ ] **Step 4: Run targeted and full verification**
+
+Run:
+
+```powershell
+node --import tsx --test tests/kuaishou-topics.test.ts tests/publisher-page-isolation.test.ts
+npm run check
+node --import tsx --test tests/*.test.ts
+```
+
+Expected: all commands pass with no failures.
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add -- src/server/publisher.ts tests/kuaishou-topics.test.ts tests/publisher-page-isolation.test.ts
+git commit -m "fix: merge kuaishou title into description"
+```
