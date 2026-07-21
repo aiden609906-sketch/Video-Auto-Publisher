@@ -68,6 +68,7 @@ const WORD = {
   manuscriptDesc: "\u586b\u5199\u66f4\u5168\u9762\u7684\u76f8\u5173\u4fe1\u606f",
   enterCreateTag: "\u6309\u56de\u8f66\u952eEnter\u521b\u5efa\u6807\u7b7e"
 };
+const KUAISHOU_AI_DECLARATION_VALUES = [WORD.aiGenerated, "\u5185\u5bb9\u4e3aAI\u751f\u6210"] as const;
 
 const LOGIN_URL_PARTS = ["login", "passport", "sso"];
 const DOUYIN_MAX_HASHTAGS = 5;
@@ -738,7 +739,7 @@ export class Publisher {
   private async hasKuaishouAiDeclarationSelected(page: Page) {
     const labelBox = await this.findSmallestVisibleTextBox(page, WORD.authorDeclaration);
     if (!labelBox) return false;
-    const controls = page.locator(".ant-select,.ant-select-selector,.semi-select,.semi-select-selection,[role='combobox'],[aria-haspopup]");
+    const controls = page.locator(".ant-select-selector,.semi-select-selection,[role='combobox']");
     const count = await controls.count().catch(() => 0);
     const labelCenterY = labelBox.y + labelBox.height / 2;
     for (let index = 0; index < Math.min(count, 30); index += 1) {
@@ -747,7 +748,7 @@ export class Publisher {
       const box = await control.boundingBox({ timeout: 300 }).catch(() => null);
       if (!box || box.x < labelBox.x + labelBox.width - 8 || Math.abs(box.y + box.height / 2 - labelCenterY) > 90) continue;
       const text = ((await control.innerText({ timeout: 300 }).catch(() => "")) || "").replace(/\s+/g, "");
-      if (/AI/i.test(text) && text.includes("\u751f") && text.includes("\u6210")) return true;
+      if (KUAISHOU_AI_DECLARATION_VALUES.some((value) => value === text)) return true;
     }
     return false;
   }
@@ -766,7 +767,7 @@ export class Publisher {
         const option = options.nth(index);
         if (!(await option.isVisible({ timeout: 500 }).catch(() => false))) continue;
         const optionText = ((await option.innerText({ timeout: 500 }).catch(() => "")) || "").replace(/\s+/g, "");
-        if (optionText !== WORD.aiGenerated) continue;
+        if (!KUAISHOU_AI_DECLARATION_VALUES.some((value) => value === optionText)) continue;
         await option.scrollIntoViewIfNeeded({ timeout: 500 }).catch(() => undefined);
         await option.click({ force: true, timeout: 1500 }).catch(() => undefined);
         await page.waitForTimeout(500);
@@ -775,7 +776,7 @@ export class Publisher {
     }
 
     return page
-      .evaluate((aiGenerated) => {
+      .evaluate((aiGeneratedValues) => {
         const visible = (element: Element) => {
           const rect = element.getBoundingClientRect();
           const style = getComputedStyle(element);
@@ -785,7 +786,7 @@ export class Publisher {
           .flatMap((element) => {
             if (!visible(element)) return [];
             const text = (element.textContent || "").replace(/\s+/g, "");
-            if (text !== aiGenerated) return [];
+            if (!aiGeneratedValues.includes(text)) return [];
             const rect = element.getBoundingClientRect();
             const className = String((element as HTMLElement).className || "");
             const role = element.getAttribute("role") || "";
@@ -795,7 +796,7 @@ export class Publisher {
               const childText = (child.textContent || "").replace(/\s+/g, "");
               const childRole = child.getAttribute("role") || "";
               const childClass = String((child as HTMLElement).className || "");
-              return childText === aiGenerated && /option|menuitem|ant-select-item-option|semi-select-option/i.test(`${childRole} ${childClass}`);
+              return aiGeneratedValues.includes(childText) && /option|menuitem|ant-select-item-option|semi-select-option/i.test(`${childRole} ${childClass}`);
             });
             if (!optionLike && hasMatchingChild) return [];
             const dropdown = element.closest(
@@ -817,7 +818,7 @@ export class Publisher {
           clickable.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
         }
         return true;
-      }, WORD.aiGenerated)
+      }, [...KUAISHOU_AI_DECLARATION_VALUES])
       .catch(() => false);
   }
 

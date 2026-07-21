@@ -41,14 +41,14 @@ test("kuaishou AI declaration selects the AI generated option in a real dropdown
               const option = document.createElement('div');
               option.className = 'ant-select-item-option';
               option.setAttribute('role', 'option');
-              option.textContent = '内容由AI生成';
+              option.textContent = '内容为 AI 生成';
               option.style.cssText = 'padding:12px;';
               option.addEventListener('click', () => {
                 selector.textContent = '内容由AI生成';
                 menu.remove();
               });
               menu.appendChild(option);
-              document.body.appendChild(menu);
+              select.appendChild(menu);
             }
             select.addEventListener('mousedown', openMenu);
             select.addEventListener('click', openMenu);
@@ -104,7 +104,7 @@ test("kuaishou AI declaration does not succeed when the author row value is unch
               option.style.cssText = 'padding:12px;';
               option.addEventListener('click', () => menu.remove());
               menu.appendChild(option);
-              document.body.appendChild(menu);
+              select.appendChild(menu);
             }
             select.addEventListener('mousedown', openMenu);
             select.addEventListener('click', openMenu);
