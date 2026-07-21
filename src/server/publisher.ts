@@ -1566,7 +1566,7 @@ export class Publisher {
           const dialogs = Array.from(document.querySelectorAll('[role="dialog"],.semi-modal-content,.semi-modal,.ant-modal-content'));
           const dialog = dialogs.find((element) => (element.textContent || "").includes("\u5c01\u9762")) || document.body;
           const text = (dialog.textContent || "").replace(/\s+/g, "");
-          const uploading = /\u4e0a\u4f20\u4e2d|\u751f\u6210\u4e2d|\u5904\u7406\u4e2d|loading/i.test(text);
+          const uploading = /\u4e0a\u4f20\u4e2d|\u5904\u7406\u4e2d|loading/i.test(text);
           const failed = /\u4e0a\u4f20\u5931\u8d25|\u91cd\u8bd5|\u5931\u8d25/.test(text);
           const hasImage = Array.from(dialog.querySelectorAll("img")).some((image) => {
             const rect = image.getBoundingClientRect();

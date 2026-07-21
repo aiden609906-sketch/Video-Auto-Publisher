@@ -89,6 +89,32 @@ test("Publisher.open delegates Douyin to the V3 workflow and derives legacy comp
   }
 });
 
+test("douyin cover readiness ignores unrelated AI recommendation generation", async () => {
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  const page = await browser.newPage();
+  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
+  try {
+    await page.setContent(`
+      <div role="dialog">
+        <div class="ai-cover-recommendation">生成中</div>
+        <div class="preview-m5zWH5">
+          <img alt="uploaded cover" style="width:120px;height:90px" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='90'/%3E">
+        </div>
+      </div>
+    `);
+
+    const ready = await (hooks.waitForDouyinCoverApplied as (page: unknown, timeoutMs: number) => Promise<boolean>)(
+      page,
+      50
+    );
+
+    assert.equal(ready, true);
+  } finally {
+    await page.close();
+    await browser.close();
+  }
+});
+
 test("kuaishou AI declaration opens the author declaration dropdown before selecting", async () => {
   const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
   const calls: string[] = [];
