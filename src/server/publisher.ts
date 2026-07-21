@@ -71,8 +71,20 @@ const WORD = {
 
 const LOGIN_URL_PARTS = ["login", "passport", "sso"];
 const DOUYIN_MAX_HASHTAGS = 5;
+const KUAISHOU_MAX_HASHTAGS = 4;
 type CoverPaths = { landscape: string | null; portrait: string | null };
 type ProgressReporter = (stage: string) => void;
+
+export function hashtagsForPlatform(platform: Platform, hashtags: string[]) {
+  const seen = new Set<string>();
+  const normalized = hashtags.flatMap((value) => {
+    const topic = value.trim().replace(/^#+/, "").trim();
+    if (!topic || seen.has(topic)) return [];
+    seen.add(topic);
+    return [topic];
+  });
+  return platform === "kuaishou" ? normalized.slice(0, KUAISHOU_MAX_HASHTAGS) : normalized;
+}
 
 export type PublisherDependencies = {
   copy?: (post: PlatformPost) => Promise<void>;
@@ -255,10 +267,12 @@ export class Publisher {
     reportProgress("\u6b63\u5728\u586b\u5199\u6807\u9898");
     const titlePrefilled = await this.tryFillTitle(page, platform, post.title);
     reportProgress("\u6b63\u5728\u586b\u5199\u6b63\u6587\u548c\u8bdd\u9898");
-    const bodyPrefilled = await this.tryFillBody(page, platform, post);
+    const platformHashtags = hashtagsForPlatform(platform, post.hashtags);
+    const platformPost = { ...post, hashtags: platformHashtags };
+    const bodyPrefilled = await this.tryFillBody(page, platform, platformPost);
     reportProgress("\u6b63\u5728\u5904\u7406\u5e73\u53f0\u72ec\u7acb\u8bdd\u9898\u8f93\u5165");
-    const explicitTagsPrefilled = await this.tryFillTags(page, platform, post.hashtags);
-    const tagsPrefilled = explicitTagsPrefilled || (bodyPrefilled && post.hashtags.length > 0);
+    const explicitTagsPrefilled = await this.tryFillTags(page, platform, platformHashtags);
+    const tagsPrefilled = explicitTagsPrefilled || (bodyPrefilled && platformHashtags.length > 0);
     reportProgress("\u6b63\u5728\u5173\u95ed\u8bdd\u9898\u4e0b\u62c9\u83dc\u5355");
     await this.closeTransientMenus(page, platform);
     reportProgress("\u6b63\u5728\u4e0a\u4f20\u5c01\u9762");
@@ -425,7 +439,7 @@ export class Publisher {
   }
 
   private async tryFillBody(page: Page, platform: Platform, post: PlatformPost, timeoutMs = platform === "douyin" ? 10_000 : 75_000) {
-    const tags = post.hashtags.map((tag) => `#${tag.replace(/^#/, "")}`).join(" ");
+    const tags = hashtagsForPlatform(platform, post.hashtags).map((tag) => `#${tag}`).join(" ");
     const body = [post.body.trim(), tags].filter(Boolean).join(platform === "douyin" ? " " : "\n");
     if (!body.trim()) return false;
     if (platform === "douyin") return this.tryFillDouyinBodyAndTopics(page, post, timeoutMs);
