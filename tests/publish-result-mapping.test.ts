@@ -120,6 +120,24 @@ test("legacy Douyin results complete after every required write was verified", (
   );
 });
 
+test("legacy Kuaishou results complete after every requested field was verified", () => {
+  const outcome = normalizePublishOutcome("kuaishou", "legacy-test", {
+    browserMode: "managed",
+    copied: true,
+    loginRequired: false,
+    uploadPrefilled: true,
+    titlePrefilled: true,
+    bodyPrefilled: true,
+    tagsPrefilled: true,
+    coverPrefilled: true,
+    declarationPrefilled: true
+  });
+
+  assert.equal(outcome.status, "complete");
+  assert.equal(outcome.failedStage, null);
+  assert.equal(outcome.stages.some((stage) => stage.stage === "ready"), false);
+});
+
 test("successful legacy manual result normalizes to complete prepared materials", () => {
   const outcome = normalizePublishOutcome("xiaohongshu", "legacy-manual-test", {
     browserMode: "manual",
@@ -178,8 +196,7 @@ test("legacy booleans map only to their matching stages and never override V3 ou
       body: "succeeded",
       topics: "failed",
       cover: "succeeded",
-      declaration: "failed",
-      ready: "failed"
+      declaration: "failed"
     }
   );
   assert.strictEqual(normalizePublishOutcome("douyin", "ignored", existing), existing);

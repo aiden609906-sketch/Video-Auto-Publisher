@@ -295,6 +295,22 @@ test("kuaishou cover upload reports failure when the main cover does not verify"
   assert.equal(uploaded, false);
 });
 
+test("kuaishou accepts a changed blob cover without waiting for CDN replacement", async () => {
+  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
+  hooks.kuaishouMainCoverSignature = async () => "blob:https://cp.kuaishou.com/applied-cover";
+  const page = {
+    waitForTimeout: async () => {
+      throw new Error("changed cover should return immediately");
+    }
+  };
+
+  const changed = await (
+    hooks.waitForKuaishouMainCoverChange as (page: unknown, beforeCover: string | null, timeoutMs: number) => Promise<boolean>
+  )(page, "https://cdn.example.com/old-cover.png", 10_000);
+
+  assert.equal(changed, true);
+});
+
 test("kuaishou cover upload waits for the uploaded preview before confirming", async () => {
   const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
   const calls: string[] = [];

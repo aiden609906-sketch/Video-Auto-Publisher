@@ -1722,14 +1722,12 @@ export class Publisher {
 
   private async waitForKuaishouMainCoverChange(page: Page, beforeCover: string | null, timeoutMs: number) {
     const started = Date.now();
-    let sawChangedCover = false;
     while (Date.now() - started < timeoutMs) {
       const current = await this.kuaishouMainCoverSignature(page);
-      if (current && current !== beforeCover) sawChangedCover = true;
-      if (sawChangedCover && current && !current.includes("blob:")) return true;
+      if (current && current !== beforeCover) return true;
       await page.waitForTimeout(1000);
     }
-    return sawChangedCover;
+    return false;
   }
 
   private async openKuaishouCoverDialog(page: Page) {

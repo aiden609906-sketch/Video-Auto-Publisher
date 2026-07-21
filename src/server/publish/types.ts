@@ -17,7 +17,7 @@ export type LegacyPrefillResult = {
 
 export function requiredStagesFor(platform: Platform): PublishStage[] {
   if (platform === "xiaohongshu") return [];
-  return platform === "douyin" ? [...DOUYIN_REQUIRED] : [...MANAGED_REQUIRED];
+  return platform === "douyin" || platform === "kuaishou" ? [...DOUYIN_REQUIRED] : [...MANAGED_REQUIRED];
 }
 
 export function buildPublishOutcome(

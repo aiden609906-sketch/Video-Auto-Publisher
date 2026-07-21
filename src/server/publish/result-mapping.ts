@@ -112,7 +112,7 @@ export function normalizePublishOutcome(
     legacyStage("cover", result.coverPrefilled),
     legacyStage("declaration", result.declarationPrefilled)
   ];
-  if (platform !== "douyin") {
+  if (platform !== "douyin" && platform !== "kuaishou") {
     stages.push({
       stage: "ready",
       status: "failed",
