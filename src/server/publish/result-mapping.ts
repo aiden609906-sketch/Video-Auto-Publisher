@@ -110,13 +110,15 @@ export function normalizePublishOutcome(
     legacyStage("body", result.bodyPrefilled),
     legacyStage("topics", result.tagsPrefilled),
     legacyStage("cover", result.coverPrefilled),
-    legacyStage("declaration", result.declarationPrefilled),
-    {
+    legacyStage("declaration", result.declarationPrefilled)
+  ];
+  if (platform !== "douyin") {
+    stages.push({
       stage: "ready",
       status: "failed",
       detail: "Legacy adapter did not verify pre-publish readiness"
-    }
-  ];
+    });
+  }
   const outcome = buildPublishOutcome(platform, result.browserMode, stages, adapterVersion);
 
   // A manual result that did not copy/open its materials is a real failure, not

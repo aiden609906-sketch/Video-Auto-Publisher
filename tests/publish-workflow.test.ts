@@ -75,3 +75,76 @@ test("workflow rejects Xiaohongshu before running an adapter stage", async () =>
   );
   assert.deepEqual(calls, []);
 });
+
+test("workflow honors a complete adapter-specific stage order", async () => {
+  const calls: string[] = [];
+  const adapter: PlatformAdapter = {
+    platform: "douyin",
+    version: "test",
+    stageOrder: ["page", "video", "cover", "title", "body", "declaration", "topics"],
+    async runStage(stage) {
+      calls.push(stage);
+      return { stage, status: "succeeded", detail: stage };
+    }
+  };
+  const input: PublishInput = {
+    platform: "douyin",
+    accountId: "default-douyin",
+    filePath: "video.mp4",
+    post: {
+      id: "post-3",
+      videoId: "video-1",
+      platform: "douyin",
+      accountId: "default-douyin",
+      enabled: true,
+      title: "title",
+      body: "body",
+      hashtags: ["topic"],
+      status: "ready",
+      lastError: null
+    },
+    covers: { landscape: "landscape.png", portrait: "portrait.png" }
+  };
+
+  const outcome = await new PublishWorkflow(adapter).run(input);
+
+  assert.equal(outcome.status, "complete");
+  assert.deepEqual(calls, ["page", "video", "cover", "title", "body", "declaration", "topics"]);
+});
+
+test("workflow rejects an incomplete adapter-specific stage order before running stages", async () => {
+  const calls: string[] = [];
+  const adapter: PlatformAdapter = {
+    platform: "douyin",
+    version: "test",
+    stageOrder: ["page", "video", "title", "body", "cover", "declaration", "topics", "topics"],
+    async runStage(stage) {
+      calls.push(stage);
+      return { stage, status: "succeeded", detail: stage };
+    }
+  };
+  const input: PublishInput = {
+    platform: "douyin",
+    accountId: "default-douyin",
+    filePath: "video.mp4",
+    post: {
+      id: "post-4",
+      videoId: "video-1",
+      platform: "douyin",
+      accountId: "default-douyin",
+      enabled: true,
+      title: "title",
+      body: "body",
+      hashtags: ["topic"],
+      status: "ready",
+      lastError: null
+    },
+    covers: { landscape: "landscape.png", portrait: "portrait.png" }
+  };
+
+  await assert.rejects(
+    new PublishWorkflow(adapter).run(input),
+    /must contain every required douyin stage exactly once/
+  );
+  assert.deepEqual(calls, []);
+});

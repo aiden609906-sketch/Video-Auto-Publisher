@@ -1,5 +1,7 @@
 # Douyin Plain-Text Topics Implementation Plan
 
+> **Execution revision (2026-07-21):** Real pre-publish acceptance showed that the neutral-area click did not reliably dismiss Douyin's suggestion overlay. The final user-approved flow supersedes the dismissal steps below: `video → landscape cover → portrait cover → confirm covers → title → body → AI declaration → plain-text topics → stop for human review`. There is no Douyin `ready` stage and publish is never clicked.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Treat up to five normalized Douyin hashtags as successful when their plain text is readable in the scoped editor and the automatically opened suggestion overlay has been dismissed.

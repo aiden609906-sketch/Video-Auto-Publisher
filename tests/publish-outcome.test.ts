@@ -22,6 +22,18 @@ test("xiaohongshu has no managed required stages", () => {
   assert.deepEqual(requiredStagesFor("xiaohongshu"), []);
 });
 
+test("Douyin ends after verified topics and leaves final review to the user", () => {
+  assert.deepEqual(requiredStagesFor("douyin"), [
+    "page",
+    "video",
+    "title",
+    "body",
+    "topics",
+    "cover",
+    "declaration"
+  ]);
+});
+
 test("legacy prefill uses the explicit copied value and only succeeded matching stages", () => {
   const outcome = buildPublishOutcome("douyin", "managed", [
     { stage: "page", status: "succeeded", detail: "page" },

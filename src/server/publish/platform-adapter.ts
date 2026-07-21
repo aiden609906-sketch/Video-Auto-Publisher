@@ -19,5 +19,6 @@ export type PublishInput = {
 export interface PlatformAdapter {
   readonly platform: ManagedPlatform;
   readonly version: string;
+  readonly stageOrder?: readonly PublishStage[];
   runStage(stage: PublishStage, input: PublishInput): Promise<StageResult>;
 }

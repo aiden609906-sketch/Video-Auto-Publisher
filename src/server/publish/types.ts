@@ -1,6 +1,7 @@
 import type { Platform, PublishOutcome, PublishStage, StageResult } from "../../shared/types.js";
 
 const MANAGED_REQUIRED: PublishStage[] = ["page", "video", "title", "body", "topics", "cover", "declaration", "ready"];
+const DOUYIN_REQUIRED: PublishStage[] = ["page", "video", "title", "body", "topics", "cover", "declaration"];
 
 export type LegacyPrefillResult = {
   browserMode: "managed" | "manual";
@@ -15,7 +16,8 @@ export type LegacyPrefillResult = {
 };
 
 export function requiredStagesFor(platform: Platform): PublishStage[] {
-  return platform === "xiaohongshu" ? [] : [...MANAGED_REQUIRED];
+  if (platform === "xiaohongshu") return [];
+  return platform === "douyin" ? [...DOUYIN_REQUIRED] : [...MANAGED_REQUIRED];
 }
 
 export function buildPublishOutcome(

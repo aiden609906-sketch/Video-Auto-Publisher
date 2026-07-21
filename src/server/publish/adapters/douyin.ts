@@ -27,7 +27,6 @@ type OperationAlias =
   | "title-fill"
   | "body-operation"
   | "topics-operation"
-  | "topic-click"
   | "video-set-file"
   | "video-read-file"
   | "video-read-source"
@@ -74,13 +73,16 @@ class SafeAdapterError extends Error {
 export type DouyinAdapterCallbacks = {
   onStageStart?: (stage: PublishStage) => void;
   onStageResult?: (result: StageResult) => void;
+  uploadCovers?: (covers: PublishInput["covers"]) => Promise<boolean>;
+  selectDeclaration?: () => Promise<boolean>;
 };
 
-export const DOUYIN_ADAPTER_VERSION = "2026.07.20-v3-state-machine-5";
+export const DOUYIN_ADAPTER_VERSION = "2026.07.21-v3-state-machine-8";
 
 export class DouyinAdapter implements PlatformAdapter {
   readonly platform = "douyin" as const;
   readonly version = DOUYIN_ADAPTER_VERSION;
+  readonly stageOrder = ["page", "video", "cover", "title", "body", "declaration", "topics"] as const;
   private verifiedVideo: { inputToken: string; sourceContentDigest: string; safeFileDigest: string } | null = null;
 
   constructor(
@@ -422,62 +424,107 @@ export class DouyinAdapter implements PlatformAdapter {
 
   private async fillTopics(input: PublishInput): Promise<StageResult> {
     const topics = uniqueTopics(input.post.hashtags);
-    for (const topic of topics) {
-      if (await this.hasVisibleTopicChip(topic)) continue;
-
-      const editor = this.scoped('[data-slate-editor]');
-      if ((await editor.count()) !== 1) {
-        return { stage: "topics", status: "failed", detail: "topic editor count did not equal one" };
-      }
-      const topicControl = await this.safeOperation("topics-operation", "topic-control", () => this.findExactTopicControl());
-      if (!topicControl) {
-        return { stage: "topics", status: "failed", detail: "expected scoped topic control was not unique" };
-      }
-      this.assertCreatorRoute("topic-click", "topic-control");
-      await this.safeOperation("topic-click", "topic-control", () => topicControl.click());
-      const editorFocused = await this.safeOperation("topics-operation", "topics-editor", () => editor.evaluate((element) => (
-        document.activeElement === element || Boolean(document.activeElement && element.contains(document.activeElement))
-      )));
-      if (!editorFocused) {
-        return { stage: "topics", status: "failed", detail: "topic control did not focus the scoped editor" };
-      }
-      this.assertCreatorRoute("topics-operation", "topics-editor");
-      await this.safeOperation("topics-operation", "topics-editor", () => editor.pressSequentially(`#${topic}`));
-
-      const suggestionReady = await this.waitForCondition("topics", 2_000, async () => {
-        const suggestion = await this.findExactTopicSuggestion(topic);
-        return { matched: suggestion !== null, safeState: { exactSuggestionCount: suggestion ? 1 : 0 } };
-      });
-      if (suggestionReady.status === "failed") return suggestionReady;
-      const suggestion = await this.findExactTopicSuggestion(topic);
-      if (!suggestion) {
-        return { stage: "topics", status: "failed", detail: "expected scoped topic suggestion was not unique" };
-      }
-      this.assertCreatorRoute("topic-click", "topic-suggestion");
-      await this.safeOperation("topic-click", "topic-suggestion", () => suggestion.click());
+    const editor = this.scoped('[data-slate-editor]');
+    if ((await editor.count()) !== 1 || !(await editor.isVisible())) {
+      return { stage: "topics", status: "failed", detail: "topic editor was not uniquely visible" };
     }
 
-    return this.waitForCondition("topics", 2_000, async () => {
-      let visibleCount = 0;
-      for (const topic of topics) {
-        if (await this.hasVisibleTopicChip(topic)) visibleCount += 1;
-      }
+    const missingTopics: string[] = [];
+    for (const topic of topics) {
+      if (!(await this.hasPlainTextTopic(editor, topic))) missingTopics.push(topic);
+    }
+    if (missingTopics.length > 0) {
+      this.assertCreatorRoute("topics-operation", "topics-editor");
+      await this.safeOperation("topics-operation", "topics-editor", async () => {
+        await editor.click();
+        await this.page.keyboard.press("Control+End");
+        await this.page.keyboard.insertText(` ${missingTopics.map((topic) => `#${topic}`).join(" ")}`);
+      });
+    }
+
+    const overlay = this.page.locator('.mention-suggest-item-container-TVOZMl');
+    return this.waitForCondition("topics", 3_000, async () => {
+      const writtenTopics = await this.countExpectedPlainTextTopics(editor, topics);
       return {
-        matched: visibleCount === topics.length,
-        safeState: { expectedTopics: topics.length, visibleTopics: visibleCount }
+        matched: writtenTopics === topics.length,
+        safeState: {
+          expectedTopics: topics.length,
+          writtenTopics,
+          suggestionOverlayVisible: (await this.visibleLocatorCount(overlay)) > 0
+        }
       };
     });
   }
 
+  private async countExpectedPlainTextTopics(editor: Locator, expected: string[]): Promise<number> {
+    const text = (await editor.innerText()).replace(/[\u200B-\u200D\uFEFF]/g, "");
+    const tokens = new Set(
+      (text.match(/#[^\s#]+/gu) || [])
+        .map(normalizeTopic)
+        .filter(Boolean)
+    );
+    return expected.filter((topic) => tokens.has(topic)).length;
+  }
+
+  private async hasPlainTextTopic(editor: Locator, topic: string): Promise<boolean> {
+    return (await this.countExpectedPlainTextTopics(editor, [topic])) === 1;
+  }
+
+  private async visibleLocatorCount(locator: Locator): Promise<number> {
+    let visible = 0;
+    const count = await locator.count();
+    for (let index = 0; index < count; index += 1) {
+      if (await locator.nth(index).isVisible()) visible += 1;
+    }
+    return visible;
+  }
+
+  private async findTopCoverEditorLabel(dialog: Locator, label: string): Promise<Locator | null> {
+    const labels = dialog.getByText(label, { exact: true });
+    const visible: Array<{ locator: Locator; y: number; area: number }> = [];
+    for (let index = 0; index < (await labels.count()); index += 1) {
+      const locator = labels.nth(index);
+      if (!(await locator.isVisible())) continue;
+      const box = await locator.boundingBox();
+      if (box) visible.push({ locator, y: box.y, area: box.width * box.height });
+    }
+    visible.sort((left, right) => left.y - right.y || left.area - right.area);
+    return visible[0]?.locator || null;
+  }
+
+  private async coverEditorStepIsActive(label: Locator): Promise<boolean> {
+    return label.evaluate((element) => {
+      const control = element.closest('[role="tab"], [class*="step-"]') || element.closest("button") || element;
+      const className = control.className?.toString() || "";
+      return /(?:^|[-_\s])active(?:[-_\s]|$)|(?:^|[-_\s])selected(?:[-_\s]|$)/i.test(className) ||
+        control.getAttribute("aria-selected") === "true";
+    });
+  }
+
   private async uploadCovers(input: PublishInput): Promise<StageResult> {
-    const coverPath = input.covers.landscape || input.covers.portrait;
-    if (!coverPath) {
+    const landscapePath = input.covers.landscape;
+    const portraitPath = input.covers.portrait;
+    if (!landscapePath && !portraitPath) {
       return {
         stage: "cover",
         status: "succeeded",
         detail: "cover postcondition verified; no cover requested",
         evidence: { requested: false }
       };
+    }
+    if (this.callbacks.uploadCovers) {
+      const applied = await this.callbacks.uploadCovers(input.covers);
+      return applied
+        ? {
+            stage: "cover",
+            status: "succeeded",
+            detail: "V2 linear cover flow completed and closed the editor",
+            evidence: {
+              landscapeApplied: Boolean(landscapePath),
+              portraitApplied: Boolean(portraitPath)
+            }
+          }
+        : { stage: "cover", status: "failed", detail: "V2 linear cover flow did not complete" };
     }
 
     const mainCover = this.scoped('.content-upload-new');
@@ -494,10 +541,23 @@ export class DouyinAdapter implements PlatformAdapter {
       '.dy-creator-content-modal-content[role="dialog"]'
     );
     if ((await dialog.count()) === 0) {
-      const target = this.scoped(
+      const currentTargets = this.scoped(
+        '.content-upload-new .wrapper-NN3Jh1 > .coverControl-CjlzqC'
+      );
+      const legacyTarget = this.scoped(
         '.horizontalContainer-I6fMtI > .cover-ybR0xM:not(.hcover-aQtDQg)'
       );
-      if ((await target.count()) !== 1 || !(await target.isVisible())) {
+      let target: Locator | null = null;
+      if (
+        (await currentTargets.count()) === 2 &&
+        (await currentTargets.nth(0).isVisible()) &&
+        (await currentTargets.nth(1).isVisible())
+      ) {
+        target = currentTargets.nth(0);
+      } else if ((await legacyTarget.count()) === 1 && (await legacyTarget.isVisible())) {
+        target = legacyTarget;
+      }
+      if (!target) {
         return { stage: "cover", status: "failed", detail: "cover editor trigger was not unique and visible" };
       }
       this.assertCreatorRoute("cover-click", "cover-trigger");
@@ -512,39 +572,98 @@ export class DouyinAdapter implements PlatformAdapter {
       return { stage: "cover", status: "failed", detail: "cover editor was not uniquely visible" };
     }
 
-    const beforeEditorSignature = await this.contentSignature(
-      dialog,
-      "cover-read-signature",
-      "cover-editor",
-      false
-    );
-    const uploadInput = dialog.locator('.container-Xnz3EO input.semi-upload-hidden-input[type="file"]');
-    if ((await uploadInput.count()) !== 1) {
-      return { stage: "cover", status: "failed", detail: "cover upload input count did not equal one" };
+    const preview = dialog.locator('.preview-m5zWH5');
+    if ((await preview.count()) !== 1) {
+      return { stage: "cover", status: "failed", detail: "active cover preview was not unique" };
     }
-    this.assertCreatorRoute("cover-set-file", "cover-upload-input");
-    await this.safeOperation("cover-set-file", "cover-upload-input", () => uploadInput.setInputFiles(coverPath));
 
-    const applied = await this.waitForCondition("cover", 4_000, async () => {
-      const count = await dialog.count();
-      const signature = count === 1
-        ? await this.contentSignature(dialog, "cover-read-signature", "cover-editor", false)
-        : "closed";
-      return {
-        matched: count === 1 && signature !== beforeEditorSignature,
-        safeState: { coverDialogCount: count, uploadSignatureChanged: signature !== beforeEditorSignature }
-      };
-    });
-    if (applied.status === "failed") return applied;
+    const uploadActiveCover = async (coverPath: string): Promise<StageResult | null> => {
+      const beforeEditorSignature = await this.contentSignature(
+        dialog,
+        "cover-read-signature",
+        "cover-editor",
+        false
+      );
+      const uploadInput = dialog.locator(
+        '.container-XzaV9h.upload-ZOJTUA input.semi-upload-hidden-input[type="file"]'
+      );
+      if ((await uploadInput.count()) !== 1) {
+        return { stage: "cover", status: "failed", detail: "cover upload input count did not equal one" };
+      }
+      const uploadTrigger = dialog
+        .locator('.container-XzaV9h.upload-ZOJTUA')
+        .getByText("\u4e0a\u4f20\u5c01\u9762", { exact: true });
+      if ((await uploadTrigger.count()) !== 1 || !(await uploadTrigger.isVisible())) {
+        return { stage: "cover", status: "failed", detail: "cover upload trigger was not uniquely visible" };
+      }
+      this.assertCreatorRoute("cover-set-file", "cover-upload-input");
+      const chooserPromise = this.page.waitForEvent("filechooser", { timeout: 5_000 }).catch(() => null);
+      await this.safeOperation("cover-click", "cover-trigger", () => uploadTrigger.click({ force: true }));
+      const chooser = await chooserPromise;
+      if (chooser) {
+        await this.safeOperation("cover-set-file", "cover-upload-input", () => chooser.setFiles(coverPath));
+      } else {
+        await this.safeOperation("cover-set-file", "cover-upload-input", () => uploadInput.setInputFiles(coverPath));
+      }
+
+      const applied = await this.waitForCondition("cover", 60_000, async () => {
+        const count = await dialog.count();
+        const signature = count === 1
+          ? await this.contentSignature(dialog, "cover-read-signature", "cover-editor", false)
+          : "closed";
+        return {
+          matched: count === 1 && signature !== beforeEditorSignature,
+          safeState: {
+            coverDialogCount: count,
+            editorSignatureChanged: signature !== beforeEditorSignature
+          }
+        };
+      });
+      return applied.status === "failed" ? applied : null;
+    };
+
+    let uploadedLandscape = false;
+    let uploadedPortrait = false;
+    if (landscapePath) {
+      const landscapeFailure = await uploadActiveCover(landscapePath);
+      if (landscapeFailure) return landscapeFailure;
+      uploadedLandscape = true;
+    }
+
+    if (portraitPath) {
+      const portraitStep = await this.findTopCoverEditorLabel(
+        dialog,
+        "\u8bbe\u7f6e\u7ad6\u5c01\u9762"
+      );
+      if (!portraitStep || !(await portraitStep.isEnabled())) {
+        return { stage: "cover", status: "failed", detail: "portrait cover step was not uniquely actionable" };
+      }
+      this.assertCreatorRoute("cover-click", "cover-trigger");
+      await this.safeOperation("cover-click", "cover-trigger", () => portraitStep.click({ force: true }));
+      const switched = await this.waitForCondition("cover", 5_000, async () => {
+        const count = await dialog.count();
+        const portraitStepActive = count === 1 && await this.coverEditorStepIsActive(portraitStep);
+        return {
+          matched: portraitStepActive,
+          safeState: { coverDialogCount: count, portraitStepActive }
+        };
+      });
+      if (switched.status === "failed") return switched;
+      await this.page.waitForTimeout(600);
+
+      const portraitFailure = await uploadActiveCover(portraitPath);
+      if (portraitFailure) return portraitFailure;
+      uploadedPortrait = true;
+    }
 
     const complete = dialog.locator('.buttons-BoCvr4 button.secondary-zU1YLr[type="button"]');
     if ((await complete.count()) !== 1 || !(await complete.isVisible()) || !(await complete.isEnabled())) {
       return { stage: "cover", status: "failed", detail: "cover complete control was not uniquely actionable" };
     }
     this.assertCreatorRoute("cover-click", "cover-complete");
-    await this.safeOperation("cover-click", "cover-complete", () => complete.click());
+    await this.safeOperation("cover-click", "cover-complete", () => complete.click({ force: true }));
 
-    return this.waitForCondition("cover", 4_000, async () => {
+    return this.waitForCondition("cover", 15_000, async () => {
       const dialogCount = await dialog.count();
       const mainCount = await mainCover.count();
       const mainSignature = mainCount === 1
@@ -553,7 +672,13 @@ export class DouyinAdapter implements PlatformAdapter {
       const signatureChanged = mainSignature !== beforeMainSignature;
       return {
         matched: dialogCount === 0 && mainCount === 1 && signatureChanged,
-        safeState: { coverDialogCount: dialogCount, mainCoverCount: mainCount, uploadSignatureChanged: signatureChanged }
+        safeState: {
+          coverDialogCount: dialogCount,
+          mainCoverCount: mainCount,
+          uploadSignatureChanged: signatureChanged,
+          landscapeApplied: uploadedLandscape,
+          portraitApplied: uploadedPortrait
+        }
       };
     });
   }
@@ -661,6 +786,10 @@ export class DouyinAdapter implements PlatformAdapter {
   }
 
   private async selectDeclaration(_input: PublishInput): Promise<StageResult> {
+    const declarationCallbackUsed = Boolean(this.callbacks.selectDeclaration);
+    if (this.callbacks.selectDeclaration) {
+      await this.callbacks.selectDeclaration();
+    }
     const coverDialog = this.page.locator(
       '.dy-creator-content-modal-content[role="dialog"]'
     );
@@ -671,6 +800,18 @@ export class DouyinAdapter implements PlatformAdapter {
     const selectedValue = this.scoped('.wrapper-MLZdnB .selectText-XSrMFZ');
     const modal = this.page.locator('.semi-modal:has(.btnWrapper-LtGF4z)');
     const initialModalCount = await modal.count();
+    if (
+      declarationCallbackUsed &&
+      initialModalCount === 0 &&
+      (await this.declarationValueMatchesAi(selectedValue))
+    ) {
+      return {
+        stage: "declaration",
+        status: "succeeded",
+        detail: "AI declaration exact value verified",
+        evidence: { declarationModalCount: 0, aiValueSelected: true }
+      };
+    }
     if (initialModalCount === 0 && (await this.declarationRowIsChecked(selectedValue))) {
       return {
         stage: "declaration",
@@ -703,18 +844,9 @@ export class DouyinAdapter implements PlatformAdapter {
     }
     if (!(await this.radioIsChecked(aiLabel))) {
       this.assertCreatorRoute("declaration-operation", "declaration-surface");
-      await this.safeOperation("declaration-operation", "declaration-surface", () => aiLabel.click());
+      await this.safeOperation("declaration-operation", "declaration-surface", () => aiLabel.click({ force: true }));
     }
-
-    const checked = await this.waitForCondition("declaration", 2_000, async () => {
-      const currentAiLabel = await this.findAiDeclarationLabel(modal);
-      const selected = currentAiLabel ? await this.radioIsChecked(currentAiLabel) : false;
-      return {
-        matched: selected,
-        safeState: { declarationModalCount: await modal.count(), aiRadioChecked: selected }
-      };
-    });
-    if (checked.status === "failed") return checked;
+    await this.page.waitForTimeout(300);
 
     const confirmedModalShell = await modal.elementHandle();
     if (!confirmedModalShell) {
@@ -735,13 +867,13 @@ export class DouyinAdapter implements PlatformAdapter {
       return { stage: "declaration", status: "failed", detail: "declaration confirmation was not uniquely actionable" };
     }
     this.assertCreatorRoute("declaration-operation", "declaration-surface");
-    await this.safeOperation("declaration-operation", "declaration-surface", () => confirmations[0].click());
+    await this.safeOperation("declaration-operation", "declaration-surface", () => confirmations[0].click({ force: true }));
 
     return this.waitForCondition("declaration", 2_000, async () => {
       const modalCount = await modal.count();
       const declarationModalConnected = await confirmedModalShell.evaluate((element) => element.isConnected);
       const valueCount = await selectedValue.count();
-      const valueMatches = valueCount === 1 && (await this.declarationRowIsChecked(selectedValue));
+      const valueMatches = valueCount === 1 && (await this.declarationValueMatchesAi(selectedValue));
       return {
         matched: !declarationModalConnected && modalCount === 0 && valueMatches,
         safeState: {
@@ -799,38 +931,12 @@ export class DouyinAdapter implements PlatformAdapter {
     });
   }
 
-  private async hasVisibleTopicChip(topic: string): Promise<boolean> {
-    const chips = this.scoped('[data-slate-editor] [data-mention]');
-    const count = await chips.count();
-    for (let index = 0; index < count; index += 1) {
-      const chip = chips.nth(index);
-      if (!(await chip.isVisible())) continue;
-      const text = normalizeTopic(await chip.innerText());
-      if (text === topic) return true;
-    }
-    return false;
-  }
-
-  private async findExactTopicSuggestion(topic: string): Promise<Locator | null> {
-    const options = this.page.locator(
-      '.mention-suggest-item-container-TVOZMl .tag-hash-o0tpyE'
+  private async declarationValueMatchesAi(value: Locator): Promise<boolean> {
+    return (
+      (await value.count()) === 1 &&
+      (await value.isVisible()) &&
+      (await value.innerText()).trim() === "内容由AI生成"
     );
-    const matches: Locator[] = [];
-    const count = await options.count();
-    for (let index = 0; index < count; index += 1) {
-      const option = options.nth(index);
-      if (!(await option.isVisible())) continue;
-      const name = option.locator('[class*="tag-hash-view-name"]');
-      if ((await name.count()) !== 1) continue;
-      if (normalizeTopic(await name.innerText()) === topic) matches.push(option);
-    }
-    return matches.length === 1 ? matches[0] : null;
-  }
-
-  private async findExactTopicControl(): Promise<Locator | null> {
-    const toolbar = this.scoped(".toolbar-comp-button-container-FoZUGL");
-    const control = toolbar.getByText("#添加话题", { exact: true });
-    return (await control.count()) === 1 && (await control.isVisible()) ? control : null;
   }
 
   private scoped(selector: string): Locator {
@@ -870,7 +976,12 @@ export class DouyinAdapter implements PlatformAdapter {
       if (Date.now() - startedAt >= timeoutMs) break;
       await this.page.waitForTimeout(200);
     }
-    return { stage: name, status: "failed", detail: `${name} postcondition timed out; last=${safeState(lastState)}` };
+    return {
+      stage: name,
+      status: "failed",
+      detail: `${name} postcondition timed out; last=${safeState(lastState)}`,
+      evidence: lastState
+    };
   }
 
   private currentRouteState(): { approvedPage: boolean; loginRequired: boolean } {

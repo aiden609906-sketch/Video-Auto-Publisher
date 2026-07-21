@@ -57,15 +57,11 @@ async function htmlPage(browser: Browser, html: string, url = DOUYIN_UPLOAD_URL)
   return page;
 }
 
-async function prepareExactTopicToolbar(page: Page): Promise<void> {
+async function preparePlainTextTopicEditor(page: Page): Promise<void> {
   await page.evaluate(() => {
     const editor = document.querySelector('[data-publisher-fixture-scope] [data-slate-editor]');
-    const buttons = document.querySelectorAll('[data-publisher-fixture-scope] .toolbar-comp-button-container-FoZUGL .toolbar-button-spPS4r');
-    if (!editor || buttons.length !== 2) throw new Error("real topic toolbar fixture is incomplete");
+    if (!editor) throw new Error("real topic editor fixture is incomplete");
     editor.setAttribute("contenteditable", "true");
-    buttons[0].textContent = "#添加话题";
-    buttons[1].textContent = "@好友";
-    buttons[0].addEventListener("click", () => (editor as HTMLElement).focus());
   });
 }
 
@@ -129,180 +125,91 @@ test("douyin title succeeds only when the scoped title input contains the expect
   }
 });
 
-test("douyin topics succeed only when every expected topic is a visible scoped chip", async () => {
-  const page = await combinedFixturePage(browser, ["form-ready.html", "topic-picker-open.html"]);
-  try {
-    await prepareExactTopicToolbar(page);
-    await page.evaluate(() => {
-      const popup = document.querySelector('[class*="mention-suggest-item-container"]') as HTMLElement | null;
-      const option = document.querySelector('[class*="mention-suggest-item-container"] [class*="tag-hash-"]');
-      const optionName = option?.querySelector('[class*="tag-hash-view-name"]');
-      if (!popup || !option || !optionName) throw new Error("fixture topic option missing");
-      popup.style.display = "none";
-      setTimeout(() => popup.style.removeProperty("display"), 300);
-      optionName.textContent = "topic-one";
-      option.addEventListener("click", () => {
-        const editor = document.querySelector('[data-publisher-fixture-scope] [data-slate-editor]');
-        if (!editor) throw new Error("fixture editor missing");
-        const mention = document.createElement("span");
-        mention.setAttribute("data-mention", "fixture");
-        mention.textContent = "#topic-one";
-        editor.append(mention);
-      });
-    });
-
-    const result = await new DouyinAdapter(page).runStage("topics", makeInput());
-
-    assert.equal(result.status, "succeeded");
-    assert.equal(
-      await page.locator('[data-publisher-fixture-scope] [data-slate-editor] [data-mention]').innerText(),
-      "#topic-one"
-    );
-  } finally {
-    await page.close();
-  }
-});
-
-test("douyin topics open the real picker through the exact scoped toolbar control", async () => {
+test("douyin topics succeed when every expected topic is readable as plain text", async () => {
   const page = await fixturePage(browser, "form-ready.html");
-  const picker = await readFile(path.join(FIXTURE_DIR, "topic-picker-open.html"), "utf8");
-  const realDateNow = Date.now;
-  const realWaitForTimeout = page.waitForTimeout.bind(page);
-  let fakeNow = realDateNow();
-  Date.now = () => fakeNow;
-  Object.defineProperty(page, "waitForTimeout", {
-    configurable: true,
-    value: async (milliseconds: number) => {
-      fakeNow += milliseconds + 2_000;
-      await realWaitForTimeout(0);
-    }
-  });
   try {
-    await prepareExactTopicToolbar(page);
-    await page.evaluate((picker) => {
-      const editor = document.querySelector('[data-publisher-fixture-scope] [data-slate-editor]');
-      const topicControl = document.querySelector('[data-publisher-fixture-scope] .toolbar-comp-button-container-FoZUGL .toolbar-button-spPS4r');
-      if (!editor || !topicControl) throw new Error("topic action fixture is incomplete");
-      let controlClicks = 0;
-      let keydown = "";
-      let keypress = "";
-      let inputEvents = 0;
-      topicControl.addEventListener("click", () => {
-        controlClicks += 1;
-      });
-      editor.addEventListener("keydown", (event) => {
-        if (event.key.length === 1) keydown += event.key;
-      });
-      editor.addEventListener("keypress", (event) => {
-        if (event.key.length === 1) keypress += event.key;
-      });
-      editor.addEventListener("input", () => {
-        inputEvents += 1;
-        const expected = "#topic-one";
-        if (document.querySelector(".mention-suggest-item-container-TVOZMl")) return;
-        if (controlClicks !== 1 || !keydown.endsWith(expected) || !keypress.endsWith(expected) || inputEvents < expected.length) return;
-        const parsed = new DOMParser().parseFromString(picker, "text/html");
-        const popup = parsed.body.firstElementChild;
-        const option = popup?.querySelector(".tag-hash-o0tpyE");
-        const name = option?.querySelector('[class*="tag-hash-view-name"]');
-        if (!popup || !option || !name) throw new Error("real picker fragment is incomplete");
-        name.textContent = "topic-one";
-        option.addEventListener("click", () => {
-          const mention = document.createElement("span");
-          mention.setAttribute("data-mention", "fixture");
-          mention.textContent = "#topic-one";
-          editor.append(mention);
-        });
-        document.body.append(popup);
-      });
-    }, picker);
-
-    const result = await new DouyinAdapter(page).runStage("topics", makeInput());
-
-    assert.equal(result.status, "succeeded", `official topic action: ${result.detail}`);
-    assert.equal(await page.locator('[data-publisher-fixture-scope] [data-slate-editor] [data-mention]').count(), 1);
-  } finally {
-    Date.now = realDateNow;
-    Object.defineProperty(page, "waitForTimeout", { configurable: true, value: realWaitForTimeout });
-    await page.close();
-  }
-});
-
-test("douyin click failures expose a safe topic operation without raw selector or page text", async () => {
-  const page = await combinedFixturePage(browser, ["form-ready.html", "topic-picker-open.html"]);
-  try {
-    await prepareExactTopicToolbar(page);
-    await page.evaluate(() => {
-      const option = document.querySelector('[class*="mention-suggest-item-container"] [class*="tag-hash-"]');
-      const name = option?.querySelector('[class*="tag-hash-view-name"]');
-      if (!option || !name) throw new Error("topic fixture option missing");
-      name.textContent = "topic-one";
-    });
-    const originalLocator = page.locator.bind(page);
-    Object.defineProperty(page, "locator", {
-      configurable: true,
-      value: (selector: string) => {
-        const locator = originalLocator(selector);
-        if (selector !== '.mention-suggest-item-container-TVOZMl .tag-hash-o0tpyE') return locator;
-        return new Proxy(locator, {
-          get(target, property) {
-            if (property !== "nth") {
-              const value = Reflect.get(target, property);
-              return typeof value === "function" ? value.bind(target) : value;
-            }
-            return (index: number) => {
-              const item = target.nth(index);
-              return new Proxy(item, {
-                get(itemTarget, itemProperty) {
-                  if (itemProperty === "click") {
-                    return async () => {
-                      throw new Error("strict mode raw selector topic-one private text");
-                    };
-                  }
-                  const value = Reflect.get(itemTarget, itemProperty);
-                  return typeof value === "function" ? value.bind(itemTarget) : value;
-                }
-              });
-            };
-          }
-        });
-      }
-    });
-
-    const result = await new DouyinAdapter(page).runStage("topics", makeInput());
-
-    assert.equal(result.status, "failed");
-    assert.match(result.detail, /operation=topic-click/);
-    assert.match(result.detail, /target=topic-suggestion/);
-    assert.match(result.detail, /category=(?:strict|timeout|detached)/);
-    assert.doesNotMatch(result.detail, /mention-suggest|tag-hash|topic-one|default-douyin/i);
-  } finally {
-    await page.close();
-  }
-});
-
-test("douyin topics cap unique expected chips at five", async () => {
-  const page = await fixturePage(browser, "ready-before-publish.html");
-  try {
-    await page.evaluate(() => {
-      const editor = document.querySelector('[data-publisher-fixture-scope] [data-slate-editor]');
-      const existing = editor?.querySelector('[data-mention]');
-      if (!editor || !existing) throw new Error("fixture topic chip missing");
-      existing.remove();
-      for (let index = 1; index <= 5; index += 1) {
-        const mention = document.createElement("span");
-        mention.setAttribute("data-mention", "fixture");
-        mention.textContent = `#topic-${index}`;
-        editor.append(mention);
-      }
-    });
+    await preparePlainTextTopicEditor(page);
     const input = makeInput();
-    input.post.hashtags = ["topic-1", "topic-2", "topic-3", "topic-4", "topic-5", "topic-6", "TOPIC-2"];
+    input.post.hashtags = ["topic-one", "topic-one", "topic-two"];
 
     const result = await new DouyinAdapter(page).runStage("topics", input);
 
-    assert.equal(result.status, "succeeded");
+    assert.equal(result.status, "succeeded", result.detail);
+    assert.deepEqual(result.evidence, {
+      expectedTopics: 2,
+      writtenTopics: 2,
+      suggestionOverlayVisible: false
+    });
+    const text = await page.locator('[data-publisher-fixture-scope] [data-slate-editor]').innerText();
+    assert.match(text, /#topic-one(?:\s|$)/);
+    assert.match(text, /#topic-two(?:\s|$)/);
+    assert.equal(await page.locator('[data-publisher-fixture-scope] [data-slate-editor] [data-mention]').count(), 0);
+  } finally {
+    await page.close();
+  }
+});
+
+test("douyin topics succeed without interacting with the automatic picker", async () => {
+  const page = await combinedFixturePage(browser, ["form-ready.html", "topic-picker-open.html"]);
+  try {
+    await preparePlainTextTopicEditor(page);
+    await page.evaluate(() => {
+      const header = document.querySelector('[data-publisher-fixture-scope] .formHeader-iqcubT');
+      const popup = document.querySelector('.mention-suggest-item-container-TVOZMl');
+      if (!header || !popup) throw new Error("fixture controls missing");
+      header.addEventListener("click", () => document.documentElement.setAttribute("data-topic-dismiss-clicked", "true"));
+    });
+
+    const result = await new DouyinAdapter(page).runStage("topics", makeInput());
+
+    assert.equal(result.status, "succeeded", result.detail);
+    assert.equal(await page.locator('.mention-suggest-item-container-TVOZMl').count(), 1);
+    assert.equal(await page.locator("html").getAttribute("data-topic-dismiss-clicked"), null);
+    assert.equal(result.evidence?.suggestionOverlayVisible, true);
+  } finally {
+    await page.close();
+  }
+});
+
+test("douyin topics write at most five unique plain-text hashtags", async () => {
+  const page = await fixturePage(browser, "form-ready.html");
+  try {
+    await preparePlainTextTopicEditor(page);
+    const input = makeInput();
+    input.post.hashtags = ["topic-1", "topic-2", "topic-2", "topic-3", "topic-4", "topic-5", "topic-6"];
+
+    const result = await new DouyinAdapter(page).runStage("topics", input);
+    const text = await page.locator('[data-publisher-fixture-scope] [data-slate-editor]').innerText();
+
+    assert.equal(result.status, "succeeded", result.detail);
     assert.equal(result.evidence?.expectedTopics, 5);
+    assert.equal((text.match(/#topic-[1-5](?:\s|$)/g) || []).length, 5);
+    assert.doesNotMatch(text, /#topic-6(?:\s|$)/);
+  } finally {
+    await page.close();
+  }
+});
+
+test("douyin topics fail when an expected plain-text hashtag is not readable", async () => {
+  const page = await fixturePage(browser, "form-ready.html");
+  const originalInsertText = page.keyboard.insertText.bind(page.keyboard);
+  Object.defineProperty(page.keyboard, "insertText", {
+    configurable: true,
+    value: async (text: string) => text.includes("topic-two") ? undefined : originalInsertText(text)
+  });
+  try {
+    await preparePlainTextTopicEditor(page);
+    const input = makeInput();
+    input.post.hashtags = ["topic-one", "topic-two"];
+
+    const result = await new DouyinAdapter(page).runStage("topics", input);
+
+    assert.equal(result.status, "failed");
+    assert.deepEqual(result.evidence, {
+      expectedTopics: 2,
+      writtenTopics: 0,
+      suggestionOverlayVisible: false
+    });
   } finally {
     await page.close();
   }
@@ -319,7 +226,7 @@ test("douyin cover succeeds only after the applied signature changes and the edi
     await page.evaluate(
       ({ coverApplied, ready }) => {
         const editor = document.querySelector('[data-publisher-fixture-scope].dy-creator-content-modal-content');
-        const upload = editor?.querySelector('input.semi-upload-hidden-input');
+        const upload = editor?.querySelector('.container-XzaV9h.upload-ZOJTUA input.semi-upload-hidden-input');
         if (!editor || !upload) throw new Error("cover fixture controls missing");
         upload.addEventListener("change", () => {
           const appliedDocument = new DOMParser().parseFromString(coverApplied, "text/html");
@@ -358,6 +265,55 @@ test("douyin cover succeeds only after the applied signature changes and the edi
   }
 });
 
+test("douyin cover opens the current two-control cover surface through the landscape control", async () => {
+  const page = await fixturePage(browser, "video-post-upload-current.html");
+  const tempDir = await mkdtemp(path.join(tmpdir(), "publisher-current-cover-"));
+  const coverPath = path.join(tempDir, "landscape.png");
+  await writeFile(coverPath, "landscape-fixture");
+  try {
+    const editorHtml = await readFile(path.join(FIXTURE_DIR, "cover-editor-open.html"), "utf8");
+    await page.evaluate((editorHtml) => {
+      const controls = document.querySelectorAll(
+        '[data-publisher-fixture-scope].form-container-MDtobK .content-upload-new .wrapper-NN3Jh1 > .coverControl-CjlzqC'
+      );
+      const mainBackground = document.querySelector(
+        ".form-container-MDtobK .content-upload-new .background-OpVteV"
+      ) as HTMLElement | null;
+      if (controls.length !== 2 || !mainBackground) throw new Error("current cover fixture controls missing");
+      controls[0].addEventListener("click", () => {
+        const editorDocument = new DOMParser().parseFromString(editorHtml, "text/html");
+        const editor = editorDocument.body.firstElementChild;
+        if (!editor) throw new Error("current cover editor fixture missing");
+        document.body.append(editor);
+        const upload = editor.querySelector('.container-XzaV9h.upload-ZOJTUA input.semi-upload-hidden-input') as HTMLInputElement | null;
+        const canvas = editor.querySelector("canvas") as HTMLCanvasElement | null;
+        const complete = editor.querySelector('.buttons-BoCvr4 button.secondary-zU1YLr[type="button"]');
+        if (!upload || !canvas || !complete) throw new Error("current cover editor controls missing");
+        upload.addEventListener("change", () => {
+          const context = canvas.getContext("2d");
+          if (!context) throw new Error("current cover canvas unavailable");
+          context.fillStyle = "rgb(7, 11, 13)";
+          context.fillRect(0, 0, 1, 1);
+        });
+        complete.addEventListener("click", () => {
+          mainBackground.style.backgroundImage = "linear-gradient(rgb(3, 3, 3), rgb(4, 4, 4))";
+          editor.remove();
+        });
+      });
+    }, editorHtml);
+
+    const result = await new DouyinAdapter(page).runStage(
+      "cover",
+      makeInput({ covers: { landscape: coverPath, portrait: null } })
+    );
+
+    assert.equal(result.status, "succeeded", result.detail);
+  } finally {
+    await page.close();
+    await rm(tempDir, { recursive: true });
+  }
+});
+
 test("douyin cover detects in-place image content changes without replacing DOM nodes", async () => {
   const page = await combinedFixturePage(browser, ["form-ready.html", "cover-editor-open.html"]);
   const tempDir = await mkdtemp(path.join(tmpdir(), "publisher-cover-"));
@@ -366,7 +322,7 @@ test("douyin cover detects in-place image content changes without replacing DOM 
   try {
     await page.evaluate(() => {
       const editor = document.querySelector('[data-publisher-fixture-scope].dy-creator-content-modal-content');
-      const upload = editor?.querySelector('input.semi-upload-hidden-input') as HTMLInputElement | null;
+      const upload = editor?.querySelector('.container-XzaV9h.upload-ZOJTUA input.semi-upload-hidden-input') as HTMLInputElement | null;
       const canvas = editor?.querySelector("canvas") as HTMLCanvasElement | null;
       const complete = editor?.querySelector('.buttons-BoCvr4 button.secondary-zU1YLr[type="button"]');
       const mainBackground = document.querySelector(
@@ -397,6 +353,115 @@ test("douyin cover detects in-place image content changes without replacing DOM 
   } finally {
     await page.close();
     await rm(tempDir, { recursive: true });
+  }
+});
+
+test("douyin cover uploads landscape and portrait before completing the editor", async () => {
+  const page = await combinedFixturePage(browser, ["form-ready.html", "cover-editor-open.html"]);
+  const tempDir = await mkdtemp(path.join(tmpdir(), "publisher-cover-pair-"));
+  const landscapePath = path.join(tempDir, "landscape.png");
+  const portraitPath = path.join(tempDir, "portrait.png");
+  await writeFile(landscapePath, "landscape-fixture");
+  await writeFile(portraitPath, "portrait-fixture");
+  try {
+    await page.evaluate(() => {
+      const editor = document.querySelector('[data-publisher-fixture-scope].dy-creator-content-modal-content');
+      const upload = editor?.querySelector('.container-XzaV9h.upload-ZOJTUA input.semi-upload-hidden-input') as HTMLInputElement | null;
+      const decoyUpload = editor?.querySelector('.container-Xnz3EO input.semi-upload-hidden-input') as HTMLInputElement | null;
+      const uploadTrigger = Array.from(editor?.querySelectorAll('.container-XzaV9h.upload-ZOJTUA *') || []).find(
+        (element) => element.children.length === 0 && element.textContent?.trim() === "上传封面"
+      );
+      const canvas = editor?.querySelector("canvas") as HTMLCanvasElement | null;
+      const steps = editor?.querySelectorAll('.steps-cgzd9T .step-dXVbPX');
+      const vertical = steps?.item(1) || null;
+      const complete = editor?.querySelector('.buttons-BoCvr4 button.secondary-zU1YLr[type="button"]');
+      const mainBackground = document.querySelector(
+        ".form-container-MDtobK .content-upload-new .background-i_il_l"
+      ) as HTMLElement | null;
+      if (!editor || !upload || !decoyUpload || !uploadTrigger || !canvas || !vertical || !complete || !mainBackground) {
+        throw new Error("cover pair fixture controls missing");
+      }
+      if (steps?.item(0)) steps.item(0).textContent = "设置横封面";
+      vertical.textContent = "设置竖封面";
+      let uploadCount = 0;
+      let activeOrientation: "landscape" | "portrait" = "landscape";
+      upload.addEventListener("change", () => {
+        uploadCount += 1;
+        document.documentElement.setAttribute("data-cover-upload-count", String(uploadCount));
+        document.documentElement.setAttribute(`data-${activeOrientation}-uploaded`, "true");
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("cover pair fixture canvas unavailable");
+        context.fillStyle = uploadCount === 1 ? "rgb(7, 11, 13)" : "rgb(17, 19, 23)";
+        context.fillRect(uploadCount - 1, 0, 1, 1);
+      });
+      decoyUpload.addEventListener("change", () => {
+        document.documentElement.setAttribute("data-decoy-uploaded", "true");
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("cover pair fixture canvas unavailable");
+        context.fillStyle = "rgb(29, 31, 37)";
+        context.fillRect(3, 0, 1, 1);
+      });
+      let triggerCount = 0;
+      uploadTrigger.addEventListener("click", () => {
+        triggerCount += 1;
+        document.documentElement.setAttribute("data-cover-trigger-count", String(triggerCount));
+        upload.click();
+      });
+      vertical.addEventListener("click", () => {
+        window.setTimeout(() => {
+          activeOrientation = "portrait";
+          steps?.item(0).classList.remove("step-active-AWDV7U");
+          vertical.classList.add("step-active-AWDV7U");
+          document.documentElement.setAttribute("data-portrait-step", "opened");
+        }, 50);
+      });
+      complete.addEventListener("click", () => {
+        mainBackground.style.backgroundImage = "linear-gradient(rgb(3, 3, 3), rgb(4, 4, 4))";
+        editor.remove();
+      });
+    });
+
+    const result = await new DouyinAdapter(page).runStage(
+      "cover",
+      makeInput({ covers: { landscape: landscapePath, portrait: portraitPath } })
+    );
+
+    assert.equal(result.status, "succeeded", result.detail);
+    assert.equal(await page.locator("html").getAttribute("data-cover-upload-count"), "2");
+    assert.equal(await page.locator("html").getAttribute("data-portrait-step"), "opened");
+    assert.equal(await page.locator("html").getAttribute("data-landscape-uploaded"), "true");
+    assert.equal(await page.locator("html").getAttribute("data-portrait-uploaded"), "true");
+    assert.equal(await page.locator("html").getAttribute("data-decoy-uploaded"), null);
+    assert.equal(await page.locator("html").getAttribute("data-cover-trigger-count"), "2");
+  } finally {
+    await page.close();
+    await rm(tempDir, { recursive: true });
+  }
+});
+
+test("douyin cover can reuse the Publisher V2 cover flow as one linear operation", async () => {
+  const page = await fixturePage(browser, "form-ready.html");
+  try {
+    let calls = 0;
+    const adapter = new DouyinAdapter(page, {
+      uploadCovers: async (covers) => {
+        calls += 1;
+        assert.equal(Boolean(covers.landscape), true);
+        assert.equal(Boolean(covers.portrait), true);
+        return true;
+      }
+    });
+
+    const result = await adapter.runStage(
+      "cover",
+      makeInput({ covers: { landscape: "landscape.png", portrait: "portrait.png" } })
+    );
+
+    assert.equal(result.status, "succeeded", result.detail);
+    assert.equal(calls, 1);
+    assert.deepEqual(result.evidence, { landscapeApplied: true, portraitApplied: true });
+  } finally {
+    await page.close();
   }
 });
 
@@ -499,6 +564,30 @@ test("douyin declaration succeeds only after the AI radio is checked and its mod
 
     assert.equal(result.status, "succeeded", result.detail);
     assert.equal(await page.locator('[data-publisher-fixture-scope].semi-modal').count(), 0);
+  } finally {
+    await page.close();
+  }
+});
+
+test("douyin declaration can reuse the Publisher V2 declaration flow", async () => {
+  const page = await fixturePage(browser, "form-ready.html");
+  try {
+    let calls = 0;
+    const adapter = new DouyinAdapter(page, {
+      selectDeclaration: async () => {
+        calls += 1;
+        await page.locator('.wrapper-MLZdnB .selectText-XSrMFZ').evaluate((element) => {
+          element.textContent = "内容由AI生成";
+        });
+        return true;
+      }
+    });
+
+    const result = await adapter.runStage("declaration", makeInput());
+
+    assert.equal(result.status, "succeeded", result.detail);
+    assert.equal(calls, 1);
+    assert.deepEqual(result.evidence, { declarationModalCount: 0, aiValueSelected: true });
   } finally {
     await page.close();
   }
@@ -745,7 +834,7 @@ test("douyin page succeeds only when one visible creator form is owned by the ad
     const adapter = new DouyinAdapter(page);
     const result = await adapter.runStage("page", makeInput());
 
-    assert.equal(adapter.version, "2026.07.20-v3-state-machine-5");
+    assert.equal(adapter.version, "2026.07.21-v3-state-machine-8");
     assert.equal(result.status, "succeeded", result.detail);
     assert.equal(result.evidence?.formCount, 1);
   } finally {

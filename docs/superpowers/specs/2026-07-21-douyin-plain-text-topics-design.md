@@ -8,32 +8,33 @@ Allow the Douyin workflow to continue when hashtags are present as plain text in
 
 ## Behavior
 
-1. Normalize, de-duplicate, and cap requested topics at five.
-2. Append each missing topic to the scoped body editor as ` #topic`.
-3. Read the editor back and require every expected normalized plain-text topic to be present.
-4. Click one exact, scoped neutral area outside the editor to dismiss the automatically opened suggestion overlay.
-5. Require the suggestion overlay to be hidden or detached before returning a successful `topics` stage.
-6. Continue with cover, AI declaration, and ready verification. The final publish button remains verification-only and is never clicked.
+1. Submit the video file and verify the selected-file identity.
+2. Upload the landscape cover, upload the portrait cover, and confirm the cover editor only after each requested image has a verified visual change.
+3. Write and read back the title, then write and read back the body.
+4. Select the AI-generated-content declaration and verify the checked value.
+5. Normalize, de-duplicate, and cap requested topics at five; append each missing topic as ` #topic` and read every expected token back.
+6. Stop after topics and leave the page open for human review and publishing. The workflow does not run a final publish-button check and never clicks publish.
 
 ## Safety and Failure Rules
 
 - Do not click a topic suggestion and do not require topic chips.
-- Do not use viewport coordinates, `document.body`, fuzzy text, `force`, or first-match fallbacks for the neutral-area click.
-- Guard the route immediately before the click.
-- If the editor does not contain every expected topic, or the overlay remains open, return a failed `topics` stage and stop the workflow.
+- Do not click the suggestion overlay or any blank-area dismissal target.
+- Guard the route immediately before editor mutation.
+- If the editor does not contain every expected topic, return a failed `topics` stage and stop the workflow.
 - Error evidence contains only safe counts and booleans, never topic text or post content.
 
 ## Fallback
 
-The first implementation preserves the existing stage order as the smallest change. If focused tests or real pre-publish acceptance prove that a scoped neutral click cannot reliably dismiss the overlay, the fallback is a separate design change that moves the Douyin topics stage after cover and AI declaration but before ready verification.
+The scoped neutral-click approach failed real pre-publish acceptance. The approved fallback is therefore active: Douyin uploads both covers immediately after submitting the video, then fills title/body, selects the AI declaration, writes topics last, and stops without touching the open suggestion overlay.
 
 ## Tests
 
 - The stage succeeds with no suggestion result and no topic chips when all plain-text topics are readable.
 - At most five unique topics are written.
 - A missing topic fails the stage.
-- An opened suggestion overlay is dismissed through the scoped neutral target before success.
-- A persistent overlay fails the stage and prevents cover/declaration execution.
-- The workflow continues to cover and declaration after successful plain-text topic verification.
+- An opened suggestion overlay is not clicked and does not prevent plain-text topic success.
+- The Douyin workflow runs `video → cover → title → body → declaration → topics`.
+- Landscape and portrait covers are each uploaded and verified before the cover editor is completed.
+- Douyin ends after topics without a `ready` stage.
+- Invalid adapter-specific stage orders fail before any stage runs.
 - No test or production path clicks the final publish button.
-

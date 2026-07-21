@@ -91,7 +91,7 @@ test("manual failed outcomes never use automatic-fill wording", () => {
   assert.doesNotMatch(mapped.progressLabel, /自动填写/);
 });
 
-test("legacy managed results become partial because readiness was not verified", () => {
+test("legacy Douyin results complete after every required write was verified", () => {
   const outcome = normalizePublishOutcome("douyin", "legacy-test", {
     browserMode: "managed",
     copied: true,
@@ -104,8 +104,8 @@ test("legacy managed results become partial because readiness was not verified",
     declarationPrefilled: true
   });
 
-  assert.equal(outcome.status, "partial");
-  assert.equal(outcome.failedStage, "ready");
+  assert.equal(outcome.status, "complete");
+  assert.equal(outcome.failedStage, null);
   assert.deepEqual(
     outcome.stages.map(({ stage, status }) => ({ stage, status })),
     [
@@ -115,11 +115,9 @@ test("legacy managed results become partial because readiness was not verified",
       { stage: "body", status: "succeeded" },
       { stage: "topics", status: "succeeded" },
       { stage: "cover", status: "succeeded" },
-      { stage: "declaration", status: "succeeded" },
-      { stage: "ready", status: "failed" }
+      { stage: "declaration", status: "succeeded" }
     ]
   );
-  assert.match(outcome.stages.at(-1)?.detail || "", /legacy adapter/i);
 });
 
 test("successful legacy manual result normalizes to complete prepared materials", () => {

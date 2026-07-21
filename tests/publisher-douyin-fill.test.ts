@@ -68,16 +68,15 @@ test("Publisher.open delegates Douyin to the V3 workflow and derives legacy comp
     );
 
     assert.equal(result.status, "complete");
-    assert.equal(result.adapterVersion, "2026.07.20-v3-state-machine-5");
+    assert.equal(result.adapterVersion, "2026.07.21-v3-state-machine-8");
     assert.deepEqual(result.stages.map((stage) => stage.stage), [
       "page",
       "video",
+      "cover",
       "title",
       "body",
-      "topics",
-      "cover",
       "declaration",
-      "ready"
+      "topics"
     ]);
     assert.equal(result.titlePrefilled, true);
     assert.equal(result.bodyPrefilled, true);

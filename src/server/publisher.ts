@@ -175,7 +175,9 @@ export class Publisher {
       if (platform === "douyin") {
         const adapter = new DouyinAdapter(page, {
           onStageStart: (stage) => reportProgress(`Douyin ${stage}`),
-          onStageResult: (result) => reportProgress(`Douyin ${result.stage}: ${result.status}`)
+          onStageResult: (result) => reportProgress(`Douyin ${result.stage}: ${result.status}`),
+          uploadCovers: (coverPaths) => this.uploadDouyinCovers(page, coverPaths),
+          selectDeclaration: () => this.trySelectAiDeclaration(page, "douyin")
         });
         const outcome = await new PublishWorkflow(adapter).run({
           platform: "douyin",
