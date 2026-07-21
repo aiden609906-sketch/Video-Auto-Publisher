@@ -133,7 +133,7 @@ test("kuaishou AI declaration opens the author declaration dropdown before selec
   hooks.closeTransientMenus = async () => undefined;
   hooks.scrollDeclarationSectionIntoView = async () => undefined;
   hooks.selectAiDeclarationByDom = async () => {
-    calls.push(opened ? "dom-after-open" : "dom-before-open");
+    calls.push("unexpected-generic-dom-selection");
     return false;
   };
   hooks.clickKuaishouAuthorDeclarationControl = async () => {
@@ -168,7 +168,6 @@ test("kuaishou AI declaration opens the author declaration dropdown before selec
   assert.deepEqual(calls, [
     "verify-empty",
     "open-kuaishou-author-declaration",
-    "dom-after-open",
     "click-kuaishou-ai-option",
     "verify-selected"
   ]);

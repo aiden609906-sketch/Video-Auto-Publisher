@@ -716,9 +716,6 @@ export class Publisher {
         await page.waitForTimeout(500);
         continue;
       }
-      if (await this.selectAiDeclarationByDom(page)) {
-        if (await this.waitForKuaishouAiDeclarationSelected(page, 2_500)) return true;
-      }
       if (await this.clickKuaishouAiGeneratedOption(page)) {
         if (await this.waitForKuaishouAiDeclarationSelected(page, 2_500)) return true;
       }
@@ -768,6 +765,8 @@ export class Publisher {
       for (let index = 0; index < Math.min(count, 5); index += 1) {
         const option = options.nth(index);
         if (!(await option.isVisible({ timeout: 500 }).catch(() => false))) continue;
+        const optionText = ((await option.innerText({ timeout: 500 }).catch(() => "")) || "").replace(/\s+/g, "");
+        if (optionText !== WORD.aiGenerated) continue;
         await option.scrollIntoViewIfNeeded({ timeout: 500 }).catch(() => undefined);
         await option.click({ force: true, timeout: 1500 }).catch(() => undefined);
         await page.waitForTimeout(500);
@@ -776,7 +775,7 @@ export class Publisher {
     }
 
     return page
-      .evaluate(() => {
+      .evaluate((aiGenerated) => {
         const visible = (element: Element) => {
           const rect = element.getBoundingClientRect();
           const style = getComputedStyle(element);
@@ -786,7 +785,7 @@ export class Publisher {
           .flatMap((element) => {
             if (!visible(element)) return [];
             const text = (element.textContent || "").replace(/\s+/g, "");
-            if (!/AI/i.test(text) || !text.includes("\u751f") || !text.includes("\u6210")) return [];
+            if (text !== aiGenerated) return [];
             const rect = element.getBoundingClientRect();
             const className = String((element as HTMLElement).className || "");
             const role = element.getAttribute("role") || "";
@@ -796,7 +795,7 @@ export class Publisher {
               const childText = (child.textContent || "").replace(/\s+/g, "");
               const childRole = child.getAttribute("role") || "";
               const childClass = String((child as HTMLElement).className || "");
-              return /AI/i.test(childText) && childText.includes("\u751f") && childText.includes("\u6210") && /option|menuitem|ant-select-item-option|semi-select-option/i.test(`${childRole} ${childClass}`);
+              return childText === aiGenerated && /option|menuitem|ant-select-item-option|semi-select-option/i.test(`${childRole} ${childClass}`);
             });
             if (!optionLike && hasMatchingChild) return [];
             const dropdown = element.closest(
@@ -818,7 +817,7 @@ export class Publisher {
           clickable.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
         }
         return true;
-      })
+      }, WORD.aiGenerated)
       .catch(() => false);
   }
 

@@ -11,6 +11,13 @@ test("kuaishou AI declaration selects the AI generated option in a real dropdown
       <!doctype html>
       <html>
         <body>
+          <div class="publish-row" style="display:flex;align-items:center;gap:24px;font-size:16px;">
+            <div class="label">可见范围</div>
+            <select id="unrelated-select" style="width:400px;height:52px;">
+              <option value="public">公开</option>
+              <option value="ai">内容由AI生成</option>
+            </select>
+          </div>
           <div contenteditable="true" style="width: 600px; height: 80px;">body</div>
           <div style="height: 600px;"></div>
           <div class="publish-row" style="display:flex;align-items:center;gap:24px;font-size:16px;">
@@ -58,7 +65,64 @@ test("kuaishou AI declaration selects the AI generated option in a real dropdown
     );
 
     assert.equal(selected, true);
+    assert.equal(await page.locator("#unrelated-select").inputValue(), "public");
     assert.match(await page.locator(".ant-select-selector").innerText(), /AI.*生成/);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("kuaishou AI declaration does not succeed when the author row value is unchanged", async () => {
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  const page = await browser.newPage();
+  try {
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body>
+          <div style="height: 600px;"></div>
+          <div class="publish-row" style="display:flex;align-items:center;gap:24px;font-size:16px;">
+            <div class="label">作者声明</div>
+            <div class="ant-select" role="combobox" aria-haspopup="listbox" style="width:820px;height:52px;border:1px solid #ddd;display:flex;align-items:center;padding:0 16px;">
+              <div class="ant-select-selector" style="width:100%;">
+                <span class="ant-select-selection-placeholder">为作品添加补充说明</span>
+              </div>
+            </div>
+          </div>
+          <script>
+            const select = document.querySelector('.ant-select');
+            function openMenu() {
+              if (document.querySelector('.ant-select-dropdown')) return;
+              const menu = document.createElement('div');
+              menu.className = 'ant-select-dropdown';
+              menu.setAttribute('role', 'listbox');
+              menu.style.cssText = 'position:absolute;left:120px;top:720px;width:400px;background:white;border:1px solid #ddd;';
+              const option = document.createElement('div');
+              option.className = 'ant-select-item-option';
+              option.setAttribute('role', 'option');
+              option.textContent = '内容由 AI 生成';
+              option.style.cssText = 'padding:12px;';
+              option.addEventListener('click', () => menu.remove());
+              menu.appendChild(option);
+              document.body.appendChild(menu);
+            }
+            select.addEventListener('mousedown', openMenu);
+            select.addEventListener('click', openMenu);
+          </script>
+        </body>
+      </html>
+    `);
+
+    const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
+    hooks.closeTransientMenus = async () => undefined;
+    hooks.waitForKuaishouAiDeclarationSelected = async () => false;
+    const selected = await (hooks.trySelectAiDeclaration as (page: unknown, platform: string) => Promise<boolean>)(
+      page,
+      "kuaishou"
+    );
+
+    assert.equal(selected, false);
+    assert.match(await page.locator(".ant-select-selector").innerText(), /为作品添加补充说明/);
   } finally {
     await browser.close();
   }
