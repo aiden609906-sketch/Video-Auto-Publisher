@@ -1442,7 +1442,7 @@ export class Publisher {
     const confirmed = await this.confirmKuaishouCoverDialog(page);
     this.logKuaishouCover("confirm-dialog", { ok: confirmed });
     if (!confirmed) return fail();
-    const closed = await this.waitForKuaishouCoverDialogClosed(page, 12_000);
+    const closed = await this.waitForKuaishouCoverDialogClosed(page, 30_000);
     this.logKuaishouCover("dialog-closed", { ok: closed });
     if (!closed) return fail();
     const changed = await this.waitForKuaishouMainCoverChange(page, beforeCover, 10_000);

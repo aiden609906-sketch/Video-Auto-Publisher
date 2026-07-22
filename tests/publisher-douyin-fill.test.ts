@@ -256,8 +256,8 @@ test("kuaishou cover upload only succeeds after the cover dialog is confirmed an
     calls.push("confirm-cover-dialog");
     return true;
   };
-  hooks.waitForKuaishouCoverDialogClosed = async () => {
-    calls.push("wait-dialog-closed");
+  hooks.waitForKuaishouCoverDialogClosed = async (_page: unknown, timeoutMs: number) => {
+    calls.push(`wait-dialog-closed:${timeoutMs}`);
     return true;
   };
   hooks.waitForKuaishouMainCoverChange = async () => true;
@@ -268,7 +268,7 @@ test("kuaishou cover upload only succeeds after the cover dialog is confirmed an
   );
 
   assert.equal(uploaded, true);
-  assert.deepEqual(calls, ["upload-cover-file", "wait-upload-preview", "confirm-cover-dialog", "wait-dialog-closed"]);
+  assert.deepEqual(calls, ["upload-cover-file", "wait-upload-preview", "confirm-cover-dialog", "wait-dialog-closed:30000"]);
 });
 
 test("kuaishou cover upload reports failure when the main cover does not verify", async () => {
