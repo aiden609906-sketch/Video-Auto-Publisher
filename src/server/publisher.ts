@@ -2331,9 +2331,63 @@ export class Publisher {
     if (inputs.length < 2 || uploaded < 2) return false;
 
     await page.waitForTimeout(1200);
-    const completed = (await this.clickVisibleDialogText(page, "\u5b8c\u6210", 25_000)) || (await this.clickVisibleButton(page, "\u5b8c\u6210", 5_000));
+    const completed = await this.clickBilibiliCoverCompleteButton(page, 10_000);
     if (!completed) return false;
-    return this.waitForCoverDialogClosed(page, 8_000);
+    return this.waitForBilibiliCoverEditorClosed(page, 10_000);
+  }
+
+  private async clickBilibiliCoverCompleteButton(page: Page, timeoutMs: number) {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      if (!(await this.hasBilibiliCoverEditor(page))) return true;
+      const labels = page.getByText("\u5b8c\u6210", { exact: true });
+      const count = await labels.count().catch(() => 0);
+      const candidates: Array<{ locator: Locator; x: number; y: number }> = [];
+      for (let index = 0; index < Math.min(count, 20); index += 1) {
+        const label = labels.nth(index);
+        if (!(await label.isVisible({ timeout: 300 }).catch(() => false))) continue;
+        const control = label.locator("xpath=ancestor-or-self::*[self::button or @role='button'][1]");
+        const locator = (await control.count().catch(() => 0)) > 0 ? control.first() : label;
+        const disabled = await locator
+          .evaluate((element) => element.getAttribute("aria-disabled") === "true" || (element instanceof HTMLButtonElement && element.disabled))
+          .catch(() => true);
+        if (disabled) continue;
+        const box = await locator.boundingBox({ timeout: 300 }).catch(() => null);
+        if (!box) continue;
+        candidates.push({ locator, x: box.x + box.width / 2, y: box.y + box.height / 2 });
+      }
+
+      candidates.sort((left, right) => right.y - left.y || right.x - left.x);
+      for (const candidate of candidates) {
+        const clicked = await candidate.locator
+          .click({ force: true, timeout: 1500 })
+          .then(() => true)
+          .catch(() => false);
+        if (!clicked) await page.mouse.click(candidate.x, candidate.y).catch(() => undefined);
+        await page.waitForTimeout(500);
+        return true;
+      }
+      await page.waitForTimeout(500);
+    }
+    return false;
+  }
+
+  private async hasBilibiliCoverEditor(page: Page) {
+    const heading = page.getByText("\u5c01\u9762\u5236\u4f5c", { exact: true });
+    const count = await heading.count().catch(() => 0);
+    for (let index = 0; index < count; index += 1) {
+      if (await heading.nth(index).isVisible({ timeout: 300 }).catch(() => false)) return true;
+    }
+    return false;
+  }
+
+  private async waitForBilibiliCoverEditorClosed(page: Page, timeoutMs: number) {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      if (!(await this.hasBilibiliCoverEditor(page))) return true;
+      await page.waitForTimeout(500);
+    }
+    return false;
   }
 
   private async waitForImageInputs(page: Page, timeoutMs: number) {

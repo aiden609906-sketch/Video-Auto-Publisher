@@ -378,9 +378,8 @@ test("bilibili cover upload fails when the cover editor cannot be completed", as
 
   hooks.openCoverPanel = async () => undefined;
   hooks.waitForImageInputs = async () => [input, input];
-  hooks.clickVisibleDialogText = async () => false;
-  hooks.clickVisibleButton = async () => false;
-  hooks.waitForCoverDialogClosed = async () => false;
+  hooks.clickBilibiliCoverCompleteButton = async () => false;
+  hooks.waitForBilibiliCoverEditorClosed = async () => false;
 
   const uploaded = await (hooks.uploadBilibiliCovers as (page: unknown, covers: { landscape: string | null; portrait: string | null }) => Promise<boolean>)(
     page,
@@ -389,4 +388,51 @@ test("bilibili cover upload fails when the cover editor cannot be completed", as
 
   assert.equal(uploaded, false);
   assert.deepEqual(uploadedFiles, ["cover.png", "cover.png"]);
+});
+
+test("bilibili completes its custom cover editor after both covers are uploaded", async () => {
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  const page = await browser.newPage();
+  const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
+  const uploadedFiles: string[] = [];
+  const input = {
+    setInputFiles: async (file: string) => {
+      uploadedFiles.push(file);
+    }
+  };
+
+  try {
+    await page.setContent(`
+      <div class="bilibili-cover-editor" style="position:fixed;inset:20px;background:white">
+        <h2>封面制作</h2>
+        <div>首页推荐封面（4:3）</div>
+        <div>个人空间封面（16:9）</div>
+        <button id="cover-complete" style="position:absolute;right:24px;bottom:24px">完成</button>
+      </div>
+      <script>
+        document.querySelector('#cover-complete').addEventListener('click', () => {
+          document.documentElement.setAttribute('data-cover-completed', 'true');
+          document.querySelector('.bilibili-cover-editor').remove();
+        });
+      </script>
+    `);
+    hooks.openCoverPanel = async () => undefined;
+    hooks.waitForImageInputs = async () => [input, input];
+    hooks.clickVisibleDialogText = async () => false;
+    hooks.clickVisibleButton = async () => false;
+
+    const uploaded = await (
+      hooks.uploadBilibiliCovers as (
+        page: unknown,
+        covers: { landscape: string | null; portrait: string | null }
+      ) => Promise<boolean>
+    )(page, { landscape: "cover.png", portrait: null });
+
+    assert.equal(uploaded, true);
+    assert.deepEqual(uploadedFiles, ["cover.png", "cover.png"]);
+    assert.equal(await page.locator("html").getAttribute("data-cover-completed"), "true");
+    assert.equal(await page.locator(".bilibili-cover-editor").count(), 0);
+  } finally {
+    await browser.close();
+  }
 });
