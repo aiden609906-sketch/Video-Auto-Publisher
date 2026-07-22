@@ -188,3 +188,114 @@ test("bilibili AI declaration opens the creation declaration dropdown and verifi
     await browser.close();
   }
 });
+
+test("bilibili AI declaration ignores the artificial-intelligence category below an unselected declaration", async () => {
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  const page = await browser.newPage();
+  try {
+    await page.setContent(`
+      <div style="display:flex;align-items:center;gap:24px;height:54px;font-size:16px;">
+        <div>创作声明</div>
+        <div class="bcc-select" role="combobox" style="width:540px;height:52px;display:flex;align-items:center;">
+          请选择符合您视频内容的创作声明
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:24px;height:54px;font-size:16px;">
+        <div>分区</div>
+        <div class="bcc-select" role="combobox" style="width:260px;height:52px;display:flex;align-items:center;">
+          人工智能
+        </div>
+      </div>
+    `);
+
+    const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
+    const selected = await (
+      hooks.hasBilibiliAiDeclarationSelected as (page: unknown) => Promise<boolean>
+    )(page);
+
+    assert.equal(selected, false);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("bilibili AI declaration accepts the actual selected text outside generic select wrappers", async () => {
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  const page = await browser.newPage();
+  try {
+    await page.setContent(`
+      <div style="display:flex;align-items:center;gap:24px;height:54px;font-size:16px;">
+        <div>创作声明</div>
+        <div class="bilibili-current-value" style="width:540px;height:52px;display:flex;align-items:center;">
+          含AI生成内容
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:24px;height:54px;font-size:16px;">
+        <div>分区</div>
+        <div class="bcc-select" role="combobox" style="width:260px;height:52px;display:flex;align-items:center;">
+          人工智能
+        </div>
+      </div>
+    `);
+
+    const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
+    const selected = await (
+      hooks.hasBilibiliAiDeclarationSelected as (page: unknown) => Promise<boolean>
+    )(page);
+
+    assert.equal(selected, true);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("bilibili AI declaration accepts its unique selected value when the page layout separates it from the label box", async () => {
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  const page = await browser.newPage();
+  try {
+    await page.setContent(`
+      <div>创作声明</div>
+      <div style="height:180px;"></div>
+      <div style="display:flex;align-items:center;gap:24px;height:54px;font-size:16px;">
+        <div class="bilibili-current-value" style="width:540px;height:52px;display:flex;align-items:center;">
+          含AI生成内容
+        </div>
+      </div>
+    `);
+
+    const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
+    const selected = await (
+      hooks.hasBilibiliAiDeclarationSelected as (page: unknown) => Promise<boolean>
+    )(page);
+
+    assert.equal(selected, true);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("bilibili AI declaration reads the selected value rendered by an input control", async () => {
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  const page = await browser.newPage();
+  try {
+    await page.setContent(`
+      <div style="display:flex;align-items:center;gap:24px;height:54px;font-size:16px;">
+        <div>创作声明</div>
+        <input class="bilibili-declaration-input" value="含AI生成内容" style="width:540px;height:52px;" />
+      </div>
+      <div style="display:flex;align-items:center;gap:24px;height:54px;font-size:16px;">
+        <div>分区</div>
+        <input value="人工智能" style="width:260px;height:52px;" />
+      </div>
+    `);
+
+    const hooks = new Publisher("profiles", true) as unknown as Record<string, unknown>;
+    const selected = await (
+      hooks.hasBilibiliAiDeclarationSelected as (page: unknown) => Promise<boolean>
+    )(page);
+
+    assert.equal(selected, true);
+  } finally {
+    await browser.close();
+  }
+});

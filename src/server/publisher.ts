@@ -827,24 +827,45 @@ export class Publisher {
   private async hasBilibiliAiDeclarationSelected(page: Page) {
     const labelBox = await this.findSmallestVisibleTextBox(page, WORD.creationDeclaration);
     if (!labelBox) return false;
-    const aiTexts = page.getByText(/AI|\u4eba\u5de5\u667a\u80fd/i);
-    const aiTextCount = await aiTexts.count().catch(() => 0);
-    const labelCenterY = labelBox.y + labelBox.height / 2;
-    for (let index = 0; index < Math.min(aiTextCount, 30); index += 1) {
-      const textNode = aiTexts.nth(index);
-      if (!(await textNode.isVisible().catch(() => false))) continue;
-      const box = await textNode.boundingBox({ timeout: 300 }).catch(() => null);
-      if (!box || box.x < labelBox.x + labelBox.width - 8 || Math.abs(box.y + box.height / 2 - labelCenterY) > 90) continue;
-      const text = (await textNode.innerText({ timeout: 300 }).catch(() => "")).replace(/\s+/g, "");
-      if (/AI|\u4eba\u5de5\u667a\u80fd/i.test(text)) return true;
+    const valueControls = page.locator("input,textarea,select");
+    const valueControlCount = await valueControls.count().catch(() => 0);
+    for (let index = 0; index < Math.min(valueControlCount, 50); index += 1) {
+      const control = valueControls.nth(index);
+      if (!(await control.isVisible().catch(() => false))) continue;
+      const value = (await control.inputValue({ timeout: 300 }).catch(() => "")).replace(/\s+/g, "");
+      if (/^(?:含AI生成内容|内容(?:由|为)?AI生成)$/i.test(value)) return true;
+    }
+    const exactSelectedValues = page.getByText(/^\s*(?:含\s*AI\s*生成内容|内容\s*(?:由|为)?\s*AI\s*生成)\s*$/i);
+    const exactSelectedValueCount = await exactSelectedValues.count().catch(() => 0);
+    for (let index = 0; index < Math.min(exactSelectedValueCount, 10); index += 1) {
+      const value = exactSelectedValues.nth(index);
+      if (!(await value.isVisible().catch(() => false))) continue;
+      const isDropdownOption = await value
+        .evaluate((element) =>
+          Boolean(element.closest("[role='option'],[role='listbox'],.bcc-select-dropdown,.ant-select-dropdown"))
+        )
+        .catch(() => true);
+      if (!isDropdownOption) return true;
     }
     const controls = page.locator(".bcc-select,.bcc-select-input-wrap,.bcc-select-selector,.ant-select,.ant-select-selector,[role='combobox'],[aria-haspopup]");
     const count = await controls.count().catch(() => 0);
+    const labelCenterY = labelBox.y + labelBox.height / 2;
+    const rowTolerance = Math.max(36, labelBox.height * 1.5);
+    const selectedTexts = page.getByText(/AI\s*\u751f\u6210/i);
+    const selectedTextCount = await selectedTexts.count().catch(() => 0);
+    for (let index = 0; index < Math.min(selectedTextCount, 30); index += 1) {
+      const textNode = selectedTexts.nth(index);
+      if (!(await textNode.isVisible().catch(() => false))) continue;
+      const box = await textNode.boundingBox({ timeout: 300 }).catch(() => null);
+      if (!box || box.x < labelBox.x + labelBox.width - 8 || Math.abs(box.y + box.height / 2 - labelCenterY) > rowTolerance) continue;
+      const text = (await textNode.innerText({ timeout: 300 }).catch(() => "")).replace(/\s+/g, "");
+      if (/AI\u751f\u6210/i.test(text)) return true;
+    }
     for (let index = 0; index < Math.min(count, 40); index += 1) {
       const control = controls.nth(index);
       if (!(await control.isVisible().catch(() => false))) continue;
       const box = await control.boundingBox({ timeout: 300 }).catch(() => null);
-      if (!box || box.x < labelBox.x + labelBox.width - 8 || Math.abs(box.y + box.height / 2 - labelCenterY) > 90) continue;
+      if (!box || box.x < labelBox.x + labelBox.width - 8 || Math.abs(box.y + box.height / 2 - labelCenterY) > rowTolerance) continue;
       const text = [
         await control.innerText({ timeout: 300 }).catch(() => ""),
         await control.getAttribute("title").catch(() => ""),
@@ -852,7 +873,7 @@ export class Publisher {
       ]
         .join(" ")
         .replace(/\s+/g, "");
-      if (/AI|\u4eba\u5de5\u667a\u80fd/i.test(text)) return true;
+      if (/\u5185\u5bb9(?:\u7531|\u4e3a)?AI\u751f\u6210|AI\u751f\u6210/i.test(text)) return true;
     }
     return false;
   }
